@@ -405,12 +405,20 @@ class NewsCrawler:
                 db_pre = SessionLocal()
                 new_candidate_articles = []
                 try:
-                    for art in articles:
-                        art_identifier = art.get("url") or art.get("id") or art["title"]
-                        archive_folder = os.path.join(ARCHIVE_DIR, art["id"])
-                        existing_db = db_pre.query(NewsArchive).filter(
-                            (NewsArchive.article_id == art["id"]) | (NewsArchive.title == art["title"])
-                        ).first()
+                        clean_target_title = bot.clean_title_for_naver(art["title"])
+                        core_target = re.sub(r"[^\w가-힣a-zA-Z0-9]", "", clean_target_title)[:15]
+                        
+                        all_archives = db_pre.query(NewsArchive).all()
+                        existing_db = None
+                        for arch in all_archives:
+                            if arch.article_id == art["id"]:
+                                existing_db = arch
+                                break
+                            arch_clean = bot.clean_title_for_naver(arch.title or "")
+                            arch_core = re.sub(r"[^\w가-힣a-zA-Z0-9]", "", arch_clean)[:15]
+                            if core_target and arch_core and (core_target in arch_core or arch_core in core_target):
+                                existing_db = arch
+                                break
                         
                         if existing_db or os.path.exists(archive_folder):
                             log_event("NEWS_SCRAPING", "INFO", f"이미 DB/아카이브 처리 완료된 기사 사전 스킵: {art['title']}")
@@ -449,10 +457,21 @@ class NewsCrawler:
                         cleaned_title = cleaned_title[:75] + "..."
                     art["title"] = cleaned_title
                         
+                    clean_target_title = art["title"]
+                    core_target = re.sub(r"[^\w가-힣a-zA-Z0-9]", "", clean_target_title)[:15]
+                    
                     archive_folder = os.path.join(ARCHIVE_DIR, art["id"])
-                    existing_db = db.query(NewsArchive).filter(
-                        (NewsArchive.article_id == art["id"]) | (NewsArchive.title == art["title"])
-                    ).first()
+                    all_archives = db.query(NewsArchive).all()
+                    existing_db = None
+                    for arch in all_archives:
+                        if arch.article_id == art["id"]:
+                            existing_db = arch
+                            break
+                        arch_clean = bot.clean_title_for_naver(arch.title or "")
+                        arch_core = re.sub(r"[^\w가-힣a-zA-Z0-9]", "", arch_clean)[:15]
+                        if core_target and arch_core and (core_target in arch_core or arch_core in core_target):
+                            existing_db = arch
+                            break
                     
                     if existing_db or os.path.exists(archive_folder):
                         log_event("NEWS_SCRAPING", "INFO", f"이미 처리 완료된 기사입니다. 중복 포스팅 스킵: {art['title']}")
