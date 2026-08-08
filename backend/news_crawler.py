@@ -402,6 +402,8 @@ class NewsCrawler:
                     return 0
 
                 # 1-1. 이미 DB에 아카이빙 되었거나 처리/미분류 알림 전송된 기사 사전 필터링 (중복 처리 방지)
+                from backend.naver_bot import NaverCafeBot
+                bot = NaverCafeBot()
                 db_pre = SessionLocal()
                 new_candidate_articles = []
                 try:
