@@ -68,7 +68,9 @@ try:
         "-m", "uvicorn", 
         "backend.main:app", 
         "--host", "0.0.0.0", 
-        "--port", "8000"
+        "--port", "8000",
+        "--log-level", "warning",
+        "--no-access-log"
     ]
     print("[시스템] 백엔드 메인 엔진 및 자동 스케줄러 서버를 시작합니다 (8000 포트)...")
     backend_proc = subprocess.Popen(
