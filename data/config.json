@@ -1,0 +1,57 @@
+{
+    "cafe": {
+        "club_id": "31759124",
+        "naver_id": ""
+    },
+    "intervals": {
+        "join_approve": 60,
+        "level_up": 300,
+        "report_alert": 60,
+        "suggestion_alert": 300,
+        "news_publish": 86400
+    },
+    "levelup_conditions": {
+        "min_nickname_length": 20,
+        "min_comment_count": 5,
+        "min_visit_count": 3,
+        "check_welcome_post": true,
+        "welcome_board_name": "등업 게시판"
+    },
+    "news": {
+        "target_url": "https://game.naver.com/esports/League_of_Legends/news/lol",
+        "teams": [
+            "T1",
+            "젠지",
+            "한화생명",
+            "디플러스",
+            "KT",
+            "피어엑스",
+            "광동",
+            "DRX",
+            "OK저축은행",
+            "농심"
+        ],
+        "interview_keywords": [
+            "인터뷰",
+            "감독",
+            "코치",
+            "선수",
+            "소감",
+            "다짐",
+            "포부"
+        ],
+        "use_llm_summary": false,
+        "openai_api_key": "",
+        "publish_board_id": "4"
+    },
+    "discord": {
+        "webhook_url": "https://discord.com/api/webhooks/1528279028568555621/Uw4JH69edHCqb8GHfDeUMaSn-mbBNAh7fhth1d0bzzF-bqxZVIYltmyJEL6UNjOpkd3U",
+        "report_webhook_url": "",
+        "suggestion_webhook_url": "",
+        "log_webhook_url": "",
+        "report_board_name": "신고 게시판",
+        "suggestion_board_name": "건의 게시판",
+        "report_board_id": "3",
+        "suggestion_board_id": "5"
+    }
+}

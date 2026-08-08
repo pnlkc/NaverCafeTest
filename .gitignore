@@ -1,0 +1,25 @@
+# Virtual Environment
+venv/
+.venv/
+ENV/
+env/
+
+# Database & Log Files
+data/
+logs/
+
+# Node.js build & packages
+node_modules/
+dist/
+
+# Python cache & testing
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.pytest/
+
+# Configuration & Secrets
+.env
+session.json

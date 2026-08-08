@@ -1,0 +1,184 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap');
+
+:root {
+  /* 고급스러운 다크 테일러드 컬러 팔레트 */
+  --bg-gradient: radial-gradient(circle at 50% 0%, #151a30 0%, #0a0b10 100%);
+  --panel-bg: rgba(25, 28, 48, 0.65);
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --panel-border-hover: rgba(255, 255, 255, 0.15);
+  
+  --primary: #5c67f2;
+  --primary-hover: #4a54d4;
+  --primary-glow: rgba(92, 103, 242, 0.35);
+  
+  --secondary: #e040fb;
+  --secondary-glow: rgba(224, 64, 251, 0.25);
+  
+  --success: #00e676;
+  --success-glow: rgba(0, 230, 118, 0.2);
+  --warning: #ffd600;
+  --danger: #ff1744;
+  --danger-glow: rgba(255, 23, 68, 0.2);
+  
+  --text-primary: #f5f6fa;
+  --text-secondary: #a0a5c1;
+  --text-muted: #676b88;
+  
+  /* 마이크로 애니메이션 트랜지션 */
+  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-fast: all 0.15s ease;
+  
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  
+  color-scheme: dark;
+  background: var(--bg-gradient);
+  color: var(--text-primary);
+  
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+/* 기본 스크롤바 커스텀 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* 글래스모피즘 컨테이너 및 카드 */
+.glass-panel {
+  background: var(--panel-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  transition: var(--transition-smooth);
+}
+
+.glass-panel:hover {
+  border-color: var(--panel-border-hover);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* 프리미엄 그래디언트 텍스트 */
+.gradient-text {
+  background: linear-gradient(135deg, #fff 0%, var(--text-secondary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-family: 'Outfit', sans-serif;
+}
+
+.primary-gradient-text {
+  background: linear-gradient(135deg, #a0a8ff 0%, var(--primary) 50%, #e040fb 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-family: 'Outfit', sans-serif;
+}
+
+/* 폼 요소 스타일 */
+input, select, textarea {
+  background: rgba(10, 11, 20, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: var(--text-primary);
+  padding: 10px 14px;
+  font-size: 14px;
+  transition: var(--transition-fast);
+  outline: none;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-glow);
+  background: rgba(10, 11, 20, 0.8);
+}
+
+/* 프리미엄 버튼 */
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  box-shadow: 0 4px 14px 0 var(--primary-glow);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px 0 var(--primary-glow);
+}
+
+.btn-primary:active {
+  transform: translateY(1px);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* 배지(Badge) 공통 */
+.badge {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge-success {
+  background: rgba(0, 230, 118, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(0, 230, 118, 0.3);
+}
+
+.badge-danger {
+  background: rgba(255, 23, 68, 0.15);
+  color: var(--danger);
+  border: 1px solid rgba(255, 23, 68, 0.3);
+}
+
+.badge-warning {
+  background: rgba(255, 214, 0, 0.15);
+  color: var(--warning);
+  border: 1px solid rgba(255, 214, 0, 0.3);
+}
