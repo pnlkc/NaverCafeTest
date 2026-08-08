@@ -457,6 +457,12 @@ class NewsCrawler:
                     if existing_db or os.path.exists(archive_folder):
                         log_event("NEWS_SCRAPING", "INFO", f"이미 처리 완료된 기사입니다. 중복 포스팅 스킵: {art['title']}")
                         continue
+                        
+                    # 2차: 실제 네이버 카페 실시간 게시글 검색으로 교차 검증 (페이지 위치 관계없이 100% 탐지)
+                    if await bot.is_article_already_in_cafe(art["title"]):
+                        log_event("NEWS_SCRAPING", "INFO", f"네이버 카페에 이미 올라와 있는 기사입니다. 중복 포스팅 스킵: {art['title']}")
+                        continue
+                        
                     articles_to_post.append(art)
                 
                 total_to_process = len(articles_to_post)

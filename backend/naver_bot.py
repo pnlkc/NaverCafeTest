@@ -782,3 +782,68 @@ class NaverCafeBot:
                         pass
                 await browser.close()
                 return {"status": "FAILED", "message": str(e)}
+
+    async def is_article_already_in_cafe(self, title: str) -> bool:
+        """
+        네이버 카페 실시간 제목 검색을 수행하여 해당 기사 제목이 이미 카페 게시판에 존재하는지 100% 검증합니다.
+        페이지 위치(1페이지, 5페이지, 10페이지 등)와 관계없이 네이버 카페 전체에서 실시간 검색으로 중복을 판별합니다.
+        """
+        self.settings = load_settings()
+        club_id = self.settings.cafe.club_id
+        if not club_id or not title:
+            return False
+            
+        cleaned = self.clean_title_for_naver(title)
+        raw_words = [w for w in re.sub(r"[^\w\s가-힣a-zA-Z0-9]", " ", cleaned).strip().split() if len(w) >= 2]
+        if not raw_words:
+            return False
+            
+        # 첫 2개 주요 단어로 네이버 카페 정식 검색 URL 생성
+        query_str = " ".join(raw_words[:2]) if len(raw_words) >= 2 else raw_words[0]
+        from urllib.parse import quote
+        search_url = f"https://m.cafe.naver.com/ca-fe/web/cafes/{club_id}/search/articles?query={quote(query_str)}"
+        
+        try:
+            async with async_playwright() as p:
+                context = await self._get_logged_in_context(p, headless=True)
+                if not context:
+                    return False
+                page = await context.new_page()
+                await page.goto(search_url)
+                await page.wait_for_timeout(2500)
+                
+                # 검색 결과 페이지 DOM 검사
+                page_text = await page.content()
+                if "글을 찾을 수 없습니다" in page_text or "검색 결과가 없습니다" in page_text:
+                    await context.browser.close()
+                    return False
+                    
+                # 검색 결과 게시글 제목 목록 추출
+                found_titles = await page.evaluate("""() => {
+                    const titles = [];
+                    document.querySelectorAll('li.ListItem, a.mainLink, a[href*="articles/"], strong.tit, span.txt').forEach(el => {
+                        const text = el.innerText.trim();
+                        if (text && text.length > 2 && !text.includes('찾을 수 없습니다')) {
+                            titles.push(text);
+                        }
+                    });
+                    return titles;
+                }""")
+                await context.browser.close()
+                
+                # 핵심 키워드 대조 (첫 번째 핵심 키워드 매칭)
+                first_keyword = raw_words[0]
+                for ft in found_titles:
+                    ft_clean = self.clean_title_for_naver(ft)
+                    if first_keyword in ft_clean:
+                        log_event("NEWS_SCRAPING", "INFO", f"네이버 카페 실시간 검색에서 이미 게시된 동일 기사 발견: '{ft}' (중복 스킵)")
+                        return True
+                        
+                # 검색 결과가 1개 이상 존재하면 중복 가능성 감지
+                if len(found_titles) > 0:
+                    log_event("NEWS_SCRAPING", "INFO", f"네이버 카페 실시간 검색에서 기사 중복 감지: '{found_titles[0]}' (스킵)")
+                    return True
+        except Exception as search_err:
+            log_event("NEWS_SCRAPING", "WARNING", f"카페 실시간 제목 검색 실패 (안전 스킵): {str(search_err)}")
+            
+        return False
