@@ -54,9 +54,6 @@ function App() {
   
   // 오늘 처리된 내역만 보기 필터 상태 (기본값: true = 오늘 내역만 보기)
   const [todayOnly, setTodayOnly] = useState(true);
-  
-  // 자잘한 상세 로그 표시 유무 체크박스 상태 (기본값: false = 핵심 로그만 표시)
-  const [showAllDetailLogs, setShowAllDetailLogs] = useState(false);
 
   // 회원 가입 / 등업 전용 서브 필터 및 검색 상태
   const [memberSubFilter, setMemberSubFilter] = useState('ALL');
@@ -155,12 +152,11 @@ function App() {
 
   const fetchLogs = async () => {
     try {
-      const hideNoise = !showAllDetailLogs;
-      const res = await fetch(`${API_BASE}/api/logs?limit=50&status=SUCCESS&hide_noise=${hideNoise}&today_only=${todayOnly}`);
+      const res = await fetch(`${API_BASE}/api/logs?limit=100&today_only=${todayOnly}`);
       const data = await res.json();
       setLogs(data.items || []);
     } catch (e) {
-      console.error('로그 조회 실패:', e);
+      console.error('Failed to fetch logs:', e);
     }
   };
 
@@ -362,11 +358,6 @@ function App() {
       fetchBoardAlerts();
     }
   }, [activeTab, todayOnly]);
-
-  // 상세 로그 토글 시 재조회
-  useEffect(() => {
-    fetchLogs();
-  }, [showAllDetailLogs]);
 
   // ─── 파생 데이터 ───────────────────────────────
 
@@ -855,15 +846,6 @@ function App() {
                   최근 작업 자동 처리 기록
                 </h3>
                 <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer transition-colors select-none">
-                    <input
-                      type="checkbox"
-                      checked={showAllDetailLogs}
-                      onChange={(e) => setShowAllDetailLogs(e.target.checked)}
-                      className="rounded border-slate-700 bg-slate-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900"
-                    />
-                    <span>자잘한 상세 로그도 포함</span>
-                  </label>
                   <button onClick={() => setActiveTab('logs')} className="text-xs text-indigo-400 hover:underline">
                     전체 기록 보기 →
                   </button>
@@ -1098,16 +1080,6 @@ function App() {
               </div>
 
               <div className="flex flex-wrap items-center gap-4">
-                <label className="flex items-center gap-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer transition-colors select-none">
-                  <input
-                    type="checkbox"
-                    checked={showAllDetailLogs}
-                    onChange={(e) => setShowAllDetailLogs(e.target.checked)}
-                    className="rounded border-slate-700 bg-slate-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900"
-                  />
-                  <span>자잘한 상세 로그 포함</span>
-                </label>
-
                 <SearchInput
                   placeholder="작업 내용 검색..."
                   value={searchQuery}
