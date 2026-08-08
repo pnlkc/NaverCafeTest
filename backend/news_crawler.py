@@ -440,7 +440,8 @@ class NewsCrawler:
                 log_event("NEWS_SCRAPING", "INFO", f"중복 기사를 제외한 {len(new_candidate_articles)}개의 신규 기사 후보를 검토합니다.")
                 
                 # 2. 필터링 로직 적용 (팀별 균등 분배 + 인터뷰 우선순위)
-                filtered_articles = self._filter_articles(new_candidate_articles)
+                limit_cnt = getattr(self.settings.news, "max_articles_per_run", 10) or 10
+                filtered_articles = self._filter_articles(new_candidate_articles, limit=limit_cnt)
                 log_event("NEWS_SCRAPING", "INFO", f"필터링을 거쳐 최종 {len(filtered_articles)}개의 기사를 선정했습니다.")
                 
                 # 3. 각 기사별 상세 수집, 아카이빙 및 게시

@@ -46,6 +46,7 @@ class NewsScrapingConfig(BaseModel):
     openrouter_api_key: str = Field(default="", description="OpenRouter API 키")
     gemini_api_key: str = Field(default="", description="Gemini API 키")
     publish_board_id: str = Field(default="4", description="카페 뉴스 게시판 ID (글 작성 위치)") # 실측 기본값 반영
+    max_articles_per_run: int = Field(default=10, description="1회 크롤링 시 수집할 최대 기사 개수")
 
 class DiscordConfig(BaseModel):
     webhook_url: str = Field(default="", description="디스코드 Webhook URL (기본값)")
@@ -115,6 +116,8 @@ def load_settings() -> AppSettings:
         settings.news.gemini_api_key = os.getenv("GEMINI_API_KEY").strip()
     if os.getenv("PUBLISH_BOARD_ID"):
         settings.news.publish_board_id = os.getenv("PUBLISH_BOARD_ID").strip()
+    if os.getenv("NEWS_MAX_ARTICLES_PER_RUN") and os.getenv("NEWS_MAX_ARTICLES_PER_RUN").isdigit():
+        settings.news.max_articles_per_run = int(os.getenv("NEWS_MAX_ARTICLES_PER_RUN").strip())
         
     if os.getenv("DISCORD_WEBHOOK_URL"):
         settings.discord.webhook_url = os.getenv("DISCORD_WEBHOOK_URL").strip()

@@ -660,101 +660,108 @@ class NaverCafeBot:
                 submit_btn = page.locator("a.BaseButton--skinGreen, button.BaseButton--skinGreen, button.btn_register, a:has-text('등록'):not(:has-text('임시'))").first
                 
                 if await submit_btn.is_visible(timeout=5000):
-                    # 확실하게 엘리먼트가 준비될 때까지 대기 후 클릭
+                    # 1. 클릭 직전 상태 스크린샷 저장
+                    try:
+                        await page.screenshot(path="data/last_submit_before.png")
+                    except Exception:
+                        pass
+                        
                     await submit_btn.scroll_into_view_if_needed()
                     await submit_btn.click(force=True)
                     # 네이버 카페 서버의 최종 게시글 저장 완료 처리 대기 (6초)
                     await page.wait_for_timeout(6000)
                     
-                    # 실시간 클릭 직후 상태 스크린샷 저장 (오류 및 팝업 파악용)
+                    # 2. 클릭 6초 후 직후 상태 스크린샷 저장 (팝업/경고창/URL 파악용)
                     try:
-                        await page.screenshot(path="data/submit_check.png")
+                        await page.screenshot(path="data/last_submit_after.png")
                     except Exception:
                         pass
                     
-                    # ── 1단계: 리다이렉션 감지 (다중 방어) ──
-                    # 네이버 카페 SPA 특성상 JS 내부 라우팅으로 URL이 바뀔 수 있어 여러 전략을 순차 적용
+                    # ── 1단계: 리다이렉션 감지 및 article_id 파싱 ──
                     success_published = False
                     article_id = None
                     
-                    # 1-A) wait_for_url 패턴 매칭 (글 상세 페이지 URL 패턴)
                     try:
                         await page.wait_for_url(
-                            re.compile(r"(ArticleRead|articles/\d+|articleid=\d+)", re.I),
-                            timeout=12000
+                            re.compile(r"(ArticleRead|articles/\d+|articleid=\d+|iframe_url_utf8)", re.I),
+                            timeout=10000
                         )
-                        success_published = True
                     except Exception:
                         pass
-                    
-                    # 1-B) wait_for_url 실패 시 현재 URL 직접 검사 (실제 글 상세 URL 패턴에 명시적 매칭될 때만 인정)
-                    if not success_published:
-                        await page.wait_for_timeout(2000)
-                        final_url = page.url
-                        if any(kw in final_url for kw in ["ArticleRead", "articles/", "articleid="]):
-                            success_published = True
-                    
-                    # 성공 시 글 ID 추출 시도
-                    if success_published:
-                        final_url = page.url
-                        id_match = re.search(r"(?:articleid|articles)[\/=](\d+)", final_url, re.I)
-                        if id_match:
-                            article_id = id_match.group(1)
                         
-                    # ── 2단계: 게시판 목록 교차 검증 (1단계 실패 시에만 실행) ──
-                    if not success_published:
+                    from urllib.parse import unquote
+                    final_url = page.url
+                    decoded_url = unquote(final_url)
+                    
+                    # URL에서 article_id 추출 (일반 URL 및 인코딩된 iframe URL 모두 파싱)
+                    id_match = re.search(r"(?:articleid|articles)[\/=](\d+)", decoded_url, re.I)
+                    if not id_match:
+                        id_match = re.search(r"(?:articleid|articles)%3D(\d+)", final_url, re.I)
+                        
+                    if id_match:
+                        article_id = id_match.group(1)
+                        success_published = True
+                        log_event("NEWS_POST", "INFO", f"[실측 1단계 성공] URL 리다이렉션 감지 완료 -> article_id={article_id}")
+                    else:
+                        log_event("NEWS_POST", "INFO", f"[실측 1단계 미감지] URL: {final_url} (게시글 상세 주소로 이동되지 않음)")
+                        
+                    # ── 2단계: 게시판 최상단 글 실물 및 ID 교차 검증 (1단계 실패 시) ──
+                    if not success_published or not article_id:
                         try:
                             list_url = f"https://m.cafe.naver.com/ca-fe/web/cafes/{club_id}/menus/{board_id}"
-                            log_event("NEWS_POST", "INFO", f"리다이렉션 감지 실패로 인해, 게시판 목록({list_url})에서 교차 확인을 수행합니다.")
+                            log_event("NEWS_POST", "INFO", f"[실측 2단계 개시] 게시판 최상단 목록({list_url}) 실물 교차 검증 중...")
                             await page.goto(list_url)
                             await page.wait_for_load_state("domcontentloaded")
-                            await page.wait_for_timeout(3000)
+                            await page.wait_for_timeout(2500)
                             
-                            # 2-A) Playwright evaluate - 다중 셀렉터로 최근 글 제목 수집
-                            latest_titles = await page.evaluate("""() => {
-                                const selectors = [
-                                    'a.mainLink', 'a.article',
-                                    'a[href*="articles/"]', 'a[href*="ArticleRead"]',
-                                    '.article_item a', '.list_tit a', '.article-board a',
-                                    'li a[class*="tit"]', 'ul.list a', 'div.item a',
-                                    'strong.tit', 'span.tit'
-                                ];
-                                const titles = new Set();
-                                for (const sel of selectors) {
-                                    document.querySelectorAll(sel).forEach(el => {
-                                        const text = el.innerText.trim();
-                                        if (text && text.length > 3) titles.add(text);
-                                    });
+                            # 목록 캡처
+                            try:
+                                await page.screenshot(path="data/last_verify_board.png")
+                            except Exception:
+                                pass
+                            
+                            top_post = await page.evaluate("""() => {
+                                const sel = 'a.mainLink, a[href*="articles/"]';
+                                const el = document.querySelector(sel);
+                                if (el) {
+                                    return { title: el.innerText.trim(), href: el.getAttribute('href') || '' };
                                 }
-                                return Array.from(titles);
+                                return null;
                             }""")
                             
-                            # 2-B) Playwright 셀렉터 실패 시 BeautifulSoup fallback
-                            if not latest_titles:
-                                page_content = await page.content()
-                                soup_list = BeautifulSoup(page_content, "lxml")
-                                for a_tag in soup_list.find_all("a", href=True):
-                                    href_val = a_tag.get("href", "")
-                                    if "articles/" in href_val or "ArticleRead" in href_val:
-                                        title_text = a_tag.get_text(strip=True)
-                                        if title_text and len(title_text) > 3:
-                                            latest_titles.append(title_text)
-                            
-                            # 작성한 제목이 목록 내에 존재하는지 유연하게 확인
-                            clean_title = self.clean_title_for_naver(title).strip()
-                            title_core = re.sub(r"[^\w]", "", clean_title)
-                            for t in latest_titles:
-                                t_core = re.sub(r"[^\w]", "", t)
-                                if (clean_title in t or t in clean_title or
-                                    (len(title_core) >= 5 and title_core[:10] in t_core)):
-                                    success_published = True
-                                    log_event("NEWS_POST", "INFO", "게시판 목록 교차 검증을 통해 글이 정상 게재되었음을 성공적으로 판독했습니다.")
-                                    break
+                            if top_post:
+                                top_title = top_post.get("title", "")
+                                top_href = top_post.get("href", "")
+                                decoded_href = unquote(top_href)
+                                log_event("NEWS_POST", "INFO", f"[실측 2단계 파싱] 최상단 글 제목: '{top_title}', 링크: '{top_href}'")
+                                
+                                clean_title = self.clean_title_for_naver(title).strip()
+                                title_core = re.sub(r"[^\w]", "", clean_title)
+                                top_core = re.sub(r"[^\w]", "", top_title)
+                                
+                                if (clean_title in top_title or top_title in clean_title or
+                                    (len(title_core) >= 6 and title_core[:12] in top_core)):
+                                    
+                                    parsed_id = re.search(r"(?:articles\/|articleid[\/=]|articleid%3D)(\d+)", decoded_href, re.I)
+                                    if not parsed_id:
+                                        parsed_id = re.search(r"(?:articles\/|articleid[\/=]|articleid%3D)(\d+)", top_href, re.I)
+                                        
+                                    if parsed_id:
+                                        article_id = parsed_id.group(1)
+                                        success_published = True
+                                        log_event("NEWS_POST", "INFO", f"[실측 2단계 성공] 게시판 최상단 실물 일치 및 ID 수집 완료 -> article_id={article_id}")
+                                    else:
+                                        log_event("NEWS_POST", "WARNING", f"[실측 2단계 실패] 최상단 글 제목은 일치하나 링크에서 article_id 파싱 실패 -> href: {top_href}")
+                                else:
+                                    log_event("NEWS_POST", "WARNING", f"[실측 2단계 불일치] 최상단 글('{top_title}')이 방금 쓴 글('{clean_title}')과 다름")
+                            else:
+                                log_event("NEWS_POST", "WARNING", "[실측 2단계 실패] 게시판 목록에서 게시글 요소를 찾지 못함")
                         except Exception as list_err:
                             log_event("NEWS_POST", "WARNING", f"게시판 목록 교차 확인 중 오류: {str(list_err)}")
                             
-                    if success_published:
-                        msg = f"카페 뉴스 기사 등록 완료 및 실측 검증 성공: {title} (ID: {article_id or '확인 불가'})"
+                    # article_id가 확인되지 않으면 절대로 성공으로 인정하지 않음
+                    if success_published and article_id:
+                        msg = f"카페 뉴스 기사 등록 완료 및 실측 검증 성공: {title} (ID: {article_id})"
                         log_event("NEWS_POST", "SUCCESS", msg)
                         if notify_discord:
                             try:
@@ -763,12 +770,20 @@ class NaverCafeBot:
                             except Exception:
                                 pass
                         await browser.close()
-                        return {"status": "SUCCESS", "message": "뉴스 기사 게시 및 최종 검증 완료"}
+                        return {"status": "SUCCESS", "message": f"뉴스 기사 게시 및 실측 검증 완료 (ID: {article_id})", "article_id": article_id}
                     else:
-                        # 등록 실패 스크린샷 추가 저장
-                        await page.screenshot(path="data/submit_failed.png")
-                        raise Exception("글 등록 버튼을 누른 후 리다이렉션 및 게시판 목록 검증에 모두 실패하였습니다 (등록 유실 추정).")
+                        try:
+                            await page.screenshot(path="data/last_submit_failed.png")
+                        except Exception:
+                            pass
+                        fail_reason = f"실측 검증 실패 - article_id 미획득 (1단계 URL: {final_url})"
+                        log_event("NEWS_POST", "FAILED", fail_reason)
+                        raise Exception(fail_reason)
                 else:
+                    try:
+                        await page.screenshot(path="data/last_submit_failed.png")
+                    except Exception:
+                        pass
                     raise Exception("카페 글쓰기 화면에서 등록 버튼을 찾지 못했습니다.")
                     
             except Exception as e:
@@ -828,22 +843,16 @@ class NaverCafeBot:
                 }""")
                 await context.browser.close()
                 
-                # 정밀 제목 유사도 대조 (75%+ 이상 일치 시 동일 기사로 판정)
-                target_words = set(raw_words)
+                # 100% 완전 일치 검증 (문장 전체 또는 특수문자 정제 텍스트 100% 동일 시에만 동일 기사로 판정)
+                cleaned_target = self.clean_title_for_naver(title).strip()
+                core_target = re.sub(r"[^\w가-힣a-zA-Z0-9]", "", cleaned_target)
+                
                 for ft in found_titles:
-                    ft_cleaned = self.clean_title_for_naver(ft)
-                    ft_pure = re.sub(r"\[[^\]]+\]", "", ft_cleaned).strip()
-                    ft_words = set(w for w in re.sub(r"[^\w\s가-힣a-zA-Z0-9]", " ", ft_pure).split() if len(w) >= 2)
+                    ft_cleaned = self.clean_title_for_naver(ft).strip()
+                    ft_core = re.sub(r"[^\w가-힣a-zA-Z0-9]", "", ft_cleaned)
                     
-                    if not ft_words:
-                        continue
-                        
-                    intersection = target_words.intersection(ft_words)
-                    overlap_ratio = len(intersection) / float(min(len(target_words), len(ft_words)))
-                    seq_ratio = difflib.SequenceMatcher(None, pure_title, ft_pure).ratio()
-                    
-                    if overlap_ratio >= 0.75 or seq_ratio >= 0.75:
-                        log_event("NEWS_SCRAPING", "INFO", f"네이버 카페 게시판 실물 검증: 동일 기사 존재 감지(유사도 {max(overlap_ratio, seq_ratio):.2f}) - '{ft}' (중복 스킵)")
+                    if core_target and (core_target == ft_core or cleaned_target == ft_cleaned):
+                        log_event("NEWS_SCRAPING", "INFO", f"네이버 카페 게시판 실물 검증: 100% 동일 기사 발견 - '{ft}' (중복 스킵)")
                         return True
         except Exception as search_err:
             log_event("NEWS_SCRAPING", "WARNING", f"카페 게시판 실시간 제목 검증 예외 (스킵): {str(search_err)}")
