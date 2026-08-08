@@ -7,19 +7,34 @@ env/
 # Database & Log Files
 data/
 logs/
+*.log
 
 # Node.js build & packages
 node_modules/
+**/node_modules/
 dist/
+**/dist/
 
 # Python cache & testing
 __pycache__/
+/**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
 .pytest_cache/
 .pytest/
 
+# OS & IDE temporary files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
 # Configuration & Secrets
 .env
+.env.*
+!.env.example
 session.json
+
+# Harness & Agent transient state
+.harness/

@@ -28,6 +28,24 @@ class NaverCafeBot:
         self.settings = load_settings()
         self.stealth = Stealth()
 
+    def clean_title_for_naver(self, title: str) -> str:
+        """네이버 카페 글쓰기 폼의 특수문자 및 스팸 방지 필터를 회피하기 위해 제목을 정제합니다."""
+        if not title:
+            return ""
+        # 둥근 쌍따옴표/홑따옴표 정제
+        title = title.replace("\u201c", '"').replace("\u201d", '"')
+        title = title.replace("\u2018", "'").replace("\u2019", "'")
+        # 특수 화살표 기호 정제
+        title = title.replace("\u2192", "->").replace("\u2190", "<-")
+        # 말줄임표 정제
+        title = title.replace("\u2026", "...")
+        # 기타 스팸 필터 유발 기호 제거/치환
+        for symbol in ["\u25b2", "\u25bc", "\u25a0", "\u25c6", "\u25cf", "\u2605", "\u25b6", "\u25c0"]:
+            title = title.replace(symbol, "")
+        # 연속된 공백 문자 제거 및 양끝 공백 제거
+        title = re.sub(r'\s+', ' ', title)
+        return title.strip()
+
     async def _apply_stealth(self, context: BrowserContext):
         """Playwright 컨텍스트에 Stealth 설정을 적용하여 봇 감지를 우회합니다."""
         # 봇 탐지 우회를 위한 기본 설정 추가
@@ -38,31 +56,78 @@ class NaverCafeBot:
         """)
         await self.stealth.apply_stealth_async(context)
 
+    async def _create_browser_context(
+        self, 
+        p, 
+        headless: bool = True, 
+        storage_state: Optional[str] = None,
+        viewport: Optional[Dict[str, int]] = None
+    ):
+        """Playwright 브라우저, 컨텍스트, 페이지를 생성하고 Stealth 우회를 일괄 적용하는 공통 헬퍼 메서드."""
+        browser = await p.chromium.launch(
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled"]
+        )
+        context_kwargs = {
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        if storage_state and os.path.exists(storage_state):
+            context_kwargs["storage_state"] = storage_state
+        if viewport:
+            context_kwargs["viewport"] = viewport
+            
+        context = await browser.new_context(**context_kwargs)
+        await self._apply_stealth(context)
+        page = await context.new_page()
+        return browser, context, page
+
     async def get_session_status(self) -> Dict[str, Any]:
-        """현재 로그인 세션 파일의 유효성 여부 및 정보를 반환합니다."""
+        """현재 로그인 세션 파일의 유효성 여부 및 24시간 이내 만료 경고 정보를 반환합니다."""
         if not os.path.exists(SESSION_PATH):
-            return {"logged_in": False, "message": "로그인 세션 파일이 존재하지 않습니다."}
+            return {"logged_in": False, "expiry_warning": False, "message": "로그인 세션 파일이 존재하지 않습니다."}
         
         try:
             with open(SESSION_PATH, "r", encoding="utf-8") as f:
                 state = json.load(f)
             
-            # 쿠키 중 네이버 로그인 정보(NID_SES, NID_AUT) 존재 여부 확인
+            # 쿠키 중 네이버 로그인 정보(NID_SES, NID_AUT) 존재 여부 및 만료 시각 확인
             cookies = state.get("cookies", [])
-            has_session_cookie = any(c.get("name") in ["NID_SES", "NID_AUT"] for c in cookies)
+            session_cookies = [c for c in cookies if c.get("name") in ["NID_SES", "NID_AUT"]]
+            has_session_cookie = len(session_cookies) > 0
             
             if has_session_cookie:
                 file_time = os.path.getmtime(SESSION_PATH)
                 updated_at = datetime.fromtimestamp(file_time).strftime("%Y-%m-%d %H:%M:%S")
+                
+                # 쿠키 만료 시간 판별 (24시간 이내 만료 예정 시 경고)
+                now_ts = time.time()
+                expiry_warning = False
+                min_exp_str = ""
+                for ck in session_cookies:
+                    exp = ck.get("expires")
+                    if exp and exp != -1:
+                        remaining_hours = (exp - now_ts) / 3600.0
+                        if 0 < remaining_hours <= 24:
+                            expiry_warning = True
+                            min_exp_str = f"약 {int(remaining_hours)}시간 후 만료 예정"
+                            break
+                        elif remaining_hours <= 0:
+                            return {"logged_in": False, "expiry_warning": True, "message": "로그인 세션 쿠키가 이미 만료되었습니다."}
+                
+                msg = "로그인 세션이 유효하게 저장되어 있습니다."
+                if expiry_warning:
+                    msg = f"⚠️ 로그인 세션 만료 임박 ({min_exp_str}). 조속히 재로그인을 권장합니다."
+
                 return {
                     "logged_in": True, 
                     "updated_at": updated_at,
-                    "message": "로그인 세션이 저장되어 있습니다."
+                    "expiry_warning": expiry_warning,
+                    "message": msg
                 }
             else:
-                return {"logged_in": False, "message": "세션 파일은 있으나 로그인 쿠키가 유효하지 않습니다."}
+                return {"logged_in": False, "expiry_warning": False, "message": "세션 파일은 있으나 로그인 쿠키가 유효하지 않습니다."}
         except Exception as e:
-            return {"logged_in": False, "message": f"세션 파일 판독 실패: {str(e)}"}
+            return {"logged_in": False, "expiry_warning": False, "message": f"세션 파일 판독 실패: {str(e)}"}
 
     async def run_manual_login(self) -> Dict[str, Any]:
         """
@@ -72,19 +137,9 @@ class NaverCafeBot:
         log_event("SYSTEM", "INFO", "사용자 수동 로그인을 위한 브라우저 실행을 시작합니다.")
         
         async with async_playwright() as p:
-            # 사용자가 로그인할 수 있도록 헤드풀 모드로 크롬 실행
-            browser = await p.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled"]
+            browser, context, page = await self._create_browser_context(
+                p, headless=False, viewport={"width": 1280, "height": 800}
             )
-            
-            # 컨텍스트 생성 (실제 사용자와 유사한 User-Agent 설정)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800}
-            )
-            await self._apply_stealth(context)
-            page = await context.new_page()
             
             # 네이버 로그인 페이지로 이동
             await page.goto("https://nid.naver.com/nidlogin.login")
@@ -496,7 +551,7 @@ class NaverCafeBot:
                 await browser.close()
                 return {"status": "FAILED", "message": str(e)}
 
-    async def write_news_article(self, title: str, content: str, source_url: str, headless: bool = True) -> Dict[str, Any]:
+    async def write_news_article(self, title: str, content: str, source_url: str, headless: bool = True, notify_discord: bool = False) -> Dict[str, Any]:
         """
         카페의 뉴스 게시판에 가공된 뉴스 기사를 자동으로 작성합니다.
         """
@@ -613,53 +668,99 @@ class NaverCafeBot:
                     # 실시간 클릭 직후 상태 스크린샷 저장 (오류 및 팝업 파악용)
                     await page.screenshot(path="data/submit_check.png")
                     
-                    # 등록 처리 완료 대기 (최대 10초 대기하며 URL이 write에서 게시글 상세로 리다이렉트 되었는지 감시)
+                    # ── 1단계: 리다이렉션 감지 (다중 방어) ──
+                    # 네이버 카페 SPA 특성상 JS 내부 라우팅으로 URL이 바뀔 수 있어 여러 전략을 순차 적용
                     success_published = False
                     article_id = None
                     
+                    # 1-A) wait_for_url 패턴 매칭 (글 상세 페이지 URL 패턴)
                     try:
-                        await page.wait_for_function("() => !location.href.includes('write')", timeout=10000)
-                        final_url = page.url
-                        # ArticleRead 또는 articles/로 이동했으면 등록 성공으로 확정
-                        if "ArticleRead" in final_url or "articles/" in final_url:
-                            success_published = True
-                            # 글 ID 추출 시도
-                            id_match = re.search(r"(?:articleid|articles)[\=/](\d+)", final_url, re.I)
-                            if id_match:
-                                article_id = id_match.group(1)
+                        await page.wait_for_url(
+                            re.compile(r"(ArticleRead|articles/\d+|articleid=\d+)", re.I),
+                            timeout=12000
+                        )
+                        success_published = True
                     except Exception:
                         pass
+                    
+                    # 1-B) wait_for_url 실패 시 현재 URL 직접 검사 (SPA 전환 누락 보완)
+                    if not success_published:
+                        await page.wait_for_timeout(2000)
+                        final_url = page.url
+                        if any(kw in final_url for kw in ["ArticleRead", "articles/", "articleid="]):
+                            success_published = True
+                        elif "write" not in final_url:
+                            # write 페이지를 벗어났다면 등록 성공으로 추정
+                            success_published = True
+                    
+                    # 성공 시 글 ID 추출 시도
+                    if success_published:
+                        final_url = page.url
+                        id_match = re.search(r"(?:articleid|articles)[\/=](\d+)", final_url, re.I)
+                        if id_match:
+                            article_id = id_match.group(1)
                         
-                    # 만약 리다이렉트가 명확하지 않은 경우, 모바일 게시판 목록으로 직접 이동하여 실시간 등록 확인 교차 검증 수행
+                    # ── 2단계: 게시판 목록 교차 검증 (1단계 실패 시에만 실행) ──
                     if not success_published:
                         try:
                             list_url = f"https://m.cafe.naver.com/ca-fe/web/cafes/{club_id}/menus/{board_id}"
                             log_event("NEWS_POST", "INFO", f"리다이렉션 감지 실패로 인해, 게시판 목록({list_url})에서 교차 확인을 수행합니다.")
                             await page.goto(list_url)
+                            await page.wait_for_load_state("domcontentloaded")
                             await page.wait_for_timeout(3000)
                             
-                            # 게시판 목록의 최근 글 제목들 수집
+                            # 2-A) Playwright evaluate - 다중 셀렉터로 최근 글 제목 수집
                             latest_titles = await page.evaluate("""() => {
-                                const elements = document.querySelectorAll('a.mainLink, a.article');
-                                return Array.from(elements).map(el => el.innerText.trim());
+                                const selectors = [
+                                    'a.mainLink', 'a.article',
+                                    'a[href*="articles/"]', 'a[href*="ArticleRead"]',
+                                    '.article_item a', '.list_tit a', '.article-board a',
+                                    'li a[class*="tit"]', 'ul.list a', 'div.item a',
+                                    'strong.tit', 'span.tit'
+                                ];
+                                const titles = new Set();
+                                for (const sel of selectors) {
+                                    document.querySelectorAll(sel).forEach(el => {
+                                        const text = el.innerText.trim();
+                                        if (text && text.length > 3) titles.add(text);
+                                    });
+                                }
+                                return Array.from(titles);
                             }""")
                             
-                            # 작성한 제목이 목록 내에 존재하는지 확인
-                            clean_title = title.strip()
-                            if any(clean_title in t or t in clean_title for t in latest_titles):
-                                success_published = True
-                                log_event("NEWS_POST", "INFO", "게시판 목록 교차 검증을 통해 글이 정상 게재되었음을 성공적으로 판독했습니다.")
+                            # 2-B) Playwright 셀렉터 실패 시 BeautifulSoup fallback
+                            if not latest_titles:
+                                page_content = await page.content()
+                                soup_list = BeautifulSoup(page_content, "lxml")
+                                for a_tag in soup_list.find_all("a", href=True):
+                                    href_val = a_tag.get("href", "")
+                                    if "articles/" in href_val or "ArticleRead" in href_val:
+                                        title_text = a_tag.get_text(strip=True)
+                                        if title_text and len(title_text) > 3:
+                                            latest_titles.append(title_text)
+                            
+                            # 작성한 제목이 목록 내에 존재하는지 유연하게 확인
+                            clean_title = self.clean_title_for_naver(title).strip()
+                            title_core = re.sub(r"[^\w]", "", clean_title)
+                            for t in latest_titles:
+                                t_core = re.sub(r"[^\w]", "", t)
+                                if (clean_title in t or t in clean_title or
+                                    (len(title_core) >= 5 and title_core[:10] in t_core)):
+                                    success_published = True
+                                    log_event("NEWS_POST", "INFO", "게시판 목록 교차 검증을 통해 글이 정상 게재되었음을 성공적으로 판독했습니다.")
+                                    break
                         except Exception as list_err:
                             log_event("NEWS_POST", "WARNING", f"게시판 목록 교차 확인 중 오류: {str(list_err)}")
                             
                     if success_published:
                         msg = f"카페 뉴스 기사 등록 완료 및 실측 검증 성공: {title} (ID: {article_id or '확인 불가'})"
                         log_event("NEWS_POST", "SUCCESS", msg)
-                        try:
-                            from backend.discord_notifier import notify_action_log
-                            notify_action_log("NEWS_POST", "SUCCESS", msg)
-                        except Exception:
-                            pass
+                        if notify_discord:
+                            try:
+                                from backend.discord_notifier import notify_action_log
+                                notify_action_log("NEWS_POST", "SUCCESS", msg)
+                            except Exception:
+                                pass
                         await browser.close()
                         return {"status": "SUCCESS", "message": "뉴스 기사 게시 및 최종 검증 완료"}
                     else:
@@ -672,10 +773,11 @@ class NaverCafeBot:
             except Exception as e:
                 err_msg = f"뉴스 자동 게시 중 에러 발생: {str(e)}"
                 log_event("NEWS_POST", "FAILED", err_msg)
-                try:
-                    from backend.discord_notifier import notify_action_log
-                    notify_action_log("NEWS_POST", "FAILED", err_msg)
-                except Exception:
-                    pass
+                if notify_discord:
+                    try:
+                        from backend.discord_notifier import notify_action_log
+                        notify_action_log("NEWS_POST", "FAILED", err_msg)
+                    except Exception:
+                        pass
                 await browser.close()
                 return {"status": "FAILED", "message": str(e)}

@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import httpx
 import shutil
 from bs4 import BeautifulSoup
@@ -13,532 +14,190 @@ from backend.config import load_settings, AppSettings
 from backend.logger import log_event
 from backend.database import NewsArchive, SessionLocal
 
-# 아카이브 저장 폴더 설정
+import json
+
+# 아카이브 저장 폴더 및 팀 데이터 JSON 설정
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARCHIVE_DIR = os.path.join(BASE_DIR, "data", "archive")
+TEAMS_JSON_PATH = os.path.join(BASE_DIR, "data", "teams.json")
+
+def _read_json_file(path: str, default: Any = None) -> Any:
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            log_event("CONFIG", "WARNING", f"JSON 파일({os.path.basename(path)}) 판독 실패: {str(e)}")
+    return default
+
+def _write_json_file(path: str, data: Any) -> bool:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        return True
+    except Exception as e:
+        log_event("CONFIG", "WARNING", f"JSON 파일({os.path.basename(path)}) 저장 실패: {str(e)}")
+        return False
+
+def load_team_metadata_file() -> dict:
+    data = _read_json_file(TEAMS_JSON_PATH, default={})
+    return data if isinstance(data, dict) else {}
+
+def save_team_metadata_file(data: dict) -> bool:
+    return _write_json_file(TEAMS_JSON_PATH, data)
 
 # 글로벌 LoL e스포츠 팀 메타데이터 사전 (동적 수집용 메모리 보관소)
 TEAM_METADATA = {}
 
-# 로드 실패 혹은 테스트 시 사용될 2026시즌 실측 백업용 로컬 캐시 데이터
-FALLBACK_TEAM_METADATA = {
-    "T1": {
-        "team_names": ["T1", "SKT", "SKT T1", "SK Telecom", "티원", "슼", "슼원"],
-        "players": [
-            {"id": "Zeus", "nickname": "제우스", "real_name": "최우제"},
-            {"id": "Oner", "nickname": "오너", "real_name": "문현준"},
-            {"id": "Faker", "nickname": "페이커", "real_name": "이상혁"},
-            {"id": "Gumayusi", "nickname": "구마유시", "real_name": "이민형"},
-            {"id": "Keria", "nickname": "케리아", "real_name": "류민석"}
-        ],
-        "coaches": [
-            {"id": "Tom", "nickname": "톰", "real_name": "임재현"}
-        ]
-    },
-    "젠지": {
-        "team_names": ["젠지", "Gen.G", "GEN", "Gen.G Esports", "지오디", "젠", "젠에스"],
-        "players": [
-            {"id": "Kiin", "nickname": "기인", "real_name": "김기인"},
-            {"id": "Canyon", "nickname": "캐니언", "real_name": "김건부"},
-            {"id": "Chovy", "nickname": "쵸비", "real_name": "정지훈"},
-            {"id": "Ruler", "nickname": "룰러", "real_name": "박재혁"},
-            {"id": "Duro", "nickname": "듀로", "real_name": "주민규"}
-        ],
-        "coaches": [
-            {"id": "Ryu", "nickname": "류", "real_name": "유상욱"},
-            {"id": "Lyn", "nickname": "린", "real_name": "김다빈"},
-            {"id": "Nova", "nickname": "노바", "real_name": "박찬호"}
-        ]
-    },
-    "한화생명": {
-        "team_names": ["한화생명", "HLE", "Hanwha Life", "한화", "한생", "오렌지 전차", "한화생명e스포츠"],
-        "players": [
-            {"id": "Doran", "nickname": "도란", "real_name": "최현준"},
-            {"id": "Kanavi", "nickname": "카나비", "real_name": "서진혁"},
-            {"id": "Zeka", "nickname": "제카", "real_name": "김건우"},
-            {"id": "Viper", "nickname": "바이퍼", "real_name": "박도현"},
-            {"id": "Delight", "nickname": "딜라이트", "real_name": "유환중"}
-        ],
-        "coaches": [
-            {"id": "Homme", "nickname": "옴므", "real_name": "윤성영"},
-            {"id": "Mowgli", "nickname": "모글리", "real_name": "이재하"},
-            {"id": "Sin", "nickname": "신", "real_name": "연형모"}
-        ]
-    },
-    "디플러스": {
-        "team_names": ["디플러스", "DK", "Dplus KIA", "Dplus", "담원", "DWG", "DK KIA", "딮", "디플", "디플러스기아"],
-        "players": [
-            {"id": "Siwoo", "nickname": "시우", "real_name": "전시우"},
-            {"id": "Lucid", "nickname": "루시드", "real_name": "최용혁"},
-            {"id": "ShowMaker", "nickname": "쇼메이커", "real_name": "허수"},
-            {"id": "Smash", "nickname": "스매쉬", "real_name": "이준석"},
-            {"id": "Career", "nickname": "커리어", "real_name": "최준서"}
-        ],
-        "coaches": [
-            {"id": "cvMax", "nickname": "씨맥", "real_name": "김대호"}
-        ]
-    },
-    "KT": {
-        "team_names": ["KT", "kt Rolster", "케이티", "롤스터", "개티", "대퍼팀"],
-        "players": [
-            {"id": "PerfecT", "nickname": "퍼펙트", "real_name": "이승민"},
-            {"id": "Cuzz", "nickname": "커즈", "real_name": "문우찬"},
-            {"id": "Bdd", "nickname": "비디디", "real_name": "곽보성"},
-            {"id": "Aiming", "nickname": "에이밍", "real_name": "김하람"},
-            {"id": "Ghost", "nickname": "고스트", "real_name": "장용준"},
-            {"id": "Pollu", "nickname": "폴루", "real_name": "오동규"}
-        ],
-        "coaches": [
-            {"id": "Score", "nickname": "스코어", "real_name": "고동빈"}
-        ]
-    },
-    "피어엑스": {
-        "team_names": ["BNK", "BNK FearX", "피어엑스", "FOX", "뱅어엑스", "뱅어스", "피엑"],
-        "players": [
-            {"id": "Clear", "nickname": "클리어", "real_name": "송현민"},
-            {"id": "Raptor", "nickname": "랩터", "real_name": "전어진"},
-            {"id": "VicLa", "nickname": "빅라", "real_name": "이대광"},
-            {"id": "Daystar", "nickname": "데이스타", "real_name": "유지명"},
-            {"id": "Diable", "nickname": "디아블", "real_name": "김진영"},
-            {"id": "Taeyoon", "nickname": "태윤", "real_name": "김태윤"},
-            {"id": "Kellin", "nickname": "켈린", "real_name": "김형규"}
-        ],
-        "coaches": [
-            {"id": "Edo", "nickname": "에도", "real_name": "박준석"},
-            {"id": "Rather", "nickname": "래더", "real_name": "신형섭"},
-            {"id": "Lira", "nickname": "리라", "real_name": "남태유"}
-        ]
-    },
-    "DN 수퍼스": {
-        "team_names": ["DN SOOPers", "DN 수퍼스", "디엔 수퍼스", "DN 숲퍼스", "SOOP", "숲", "광동", "KDF", "Kwangdong", "프릭스", "숲퍼스", "수퍼스", "DNS"],
-        "players": [
-            {"id": "DuDu", "nickname": "두두", "real_name": "이동주"},
-            {"id": "Pyosik", "nickname": "표식", "real_name": "홍창현"},
-            {"id": "Clozer", "nickname": "클로저", "real_name": "이주현"},
-            {"id": "deokdam", "nickname": "덕담", "real_name": "서대길"},
-            {"id": "Life", "nickname": "라이프", "real_name": "김정민"},
-            {"id": "Peter", "nickname": "피터", "real_name": "정윤수"}
-        ],
-        "coaches": [
-            {"id": "oDin", "nickname": "오딘", "real_name": "주영달"},
-            {"id": "Ggoong", "nickname": "꿍", "real_name": "유병준"}
-        ]
-    },
-    "DRX": {
-        "team_names": ["Kiwoom DRX", "키움 DRX", "키움 디알엑스", "DRX", "디알엑스", "디알", "엑스", "키움디알엑스", "KRX"],
-        "players": [
-            {"id": "Rich", "nickname": "리치", "real_name": "이재원"},
-            {"id": "Willer", "nickname": "윌러", "real_name": "김정현"},
-            {"id": "Ucal", "nickname": "유칼", "real_name": "손우현"},
-            {"id": "Jiwoo", "nickname": "지우", "real_name": "정지우"},
-            {"id": "Vincenzo", "nickname": "빈센조", "real_name": "김정현"},
-            {"id": "Andil", "nickname": "안딜", "real_name": "문관빈"}
-        ],
-        "coaches": [
-            {"id": "Joker", "nickname": "조커", "real_name": "조재읍"},
-            {"id": "Naehyun", "nickname": "내현", "real_name": "유내현"}
-        ]
-    },
-    "OK저축은행": {
-        "team_names": ["Hanjin Brion", "한진 브리온", "한진", "브리온", "BRO", "Brion", "한진브리온"],
-        "players": [
-            {"id": "Casting", "nickname": "캐스팅", "real_name": "신민제"},
-            {"id": "Gideon", "nickname": "기디온", "real_name": "김민성"},
-            {"id": "Fisher", "nickname": "피셔", "real_name": "이정태"},
-            {"id": "Loki", "nickname": "로키", "real_name": "이상민"},
-            {"id": "Teddy", "nickname": "테디", "real_name": "박진성"},
-            {"id": "Namgung", "nickname": "남궁", "real_name": "남궁성훈"}
-        ],
-        "coaches": [
-            {"id": "Song", "nickname": "쏭", "real_name": "김상수"},
-            {"id": "Duke", "nickname": "듀크", "real_name": "이호성"}
-        ]
-    },
-    "농심": {
-        "team_names": ["농심", "NS", "Nongshim", "레드포스", "농심 레드포스", "농"],
-        "players": [
-            {"id": "Kingen", "nickname": "킹겐", "real_name": "황현서"},
-            {"id": "Sponge", "nickname": "스폰지", "real_name": "김관우"},
-            {"id": "Scout", "nickname": "스카웃", "real_name": "이예찬"},
-            {"id": "Callix", "nickname": "칼릭스", "real_name": "선현빈"},
-            {"id": "Taeyoon", "nickname": "태윤", "real_name": "김태윤"},
-            {"id": "Lehends", "nickname": "리헨즈", "real_name": "손시우"}
-        ],
-        "coaches": [
-            {"id": "Chelly", "nickname": "첼리", "real_name": "박승진"}
-        ]
-    },
-    # LPL (중국)
-    "BLG": {
-        "team_names": ["BLG", "Bilibili", "Bilibili Gaming", "빌리빌리", "비엘지"],
-        "players": [
-            {"id": "Bin", "nickname": "빈", "real_name": "Chen Ze-Bin"},
-            {"id": "Xun", "nickname": "슌", "real_name": "Peng Li-Xun"},
-            {"id": "Knight", "nickname": "나이트", "real_name": "Zhuo Ding"},
-            {"id": "Viper", "nickname": "바이퍼", "real_name": "박도현"},
-            {"id": "ON", "nickname": "온", "real_name": "Luo Wen-Jun"}
-        ],
-        "coaches": [
-            {"id": "Daeny", "nickname": "대니", "real_name": "양대인"}
-        ]
-    },
-    "TES": {
-        "team_names": ["TES", "Top Esports", "탑이스포츠", "테스", "티이에스", "탑이"],
-        "players": [
-            {"id": "369", "nickname": "삼육구", "real_name": "Bai Jiahao"},
-            {"id": "naiyou", "nickname": "나이요우", "real_name": "Yang Zi-Jian"},
-            {"id": "Creme", "nickname": "크림", "real_name": "Jian Lin"},
-            {"id": "JiaQi", "nickname": "자치", "real_name": "Runlai Wang"},
-            {"id": "fengyue", "nickname": "펑웨이", "real_name": "fengyue"}
-        ],
-        "coaches": [
-            {"id": "Maokai", "nickname": "마오카이", "real_name": "Zhu Kai"}
-        ]
-    },
-    "JDG": {
-        "team_names": ["JDG", "JD Gaming", "징동", "징동 게이밍", "제이디지"],
-        "players": [
-            {"id": "Xiaoxu", "nickname": "샤오쉬", "real_name": "Xu Xing-Zu"},
-            {"id": "JunJia", "nickname": "준자", "real_name": "Yu Chun-Chia"},
-            {"id": "HongQ", "nickname": "홍큐", "real_name": "Tsai Ming-Hong"},
-            {"id": "GALA", "nickname": "갈라", "real_name": "Chen Wei"},
-            {"id": "Vampire", "nickname": "뱀파이어", "real_name": "Zhao Zhe-Can"}
-        ],
-        "coaches": [
-            {"id": "Tabe", "nickname": "타베", "real_name": "Wong Pak Kan"}
-        ]
-    },
-    "WBG": {
-        "team_names": ["WBG", "Weibo", "Weibo Gaming", "웨이보", "웨이보 게이밍", "더블유비지"],
-        "players": [
-            {"id": "Zika", "nickname": "지카", "real_name": "Tang Hua-Yu"},
-            {"id": "Jiejie", "nickname": "지에지에", "real_name": "Zhao Li-Jie"},
-            {"id": "Xiaohu", "nickname": "샤오후", "real_name": "Li Yuan-Hao"},
-            {"id": "Elk", "nickname": "엘크", "real_name": "Zhao Jia-Hao"},
-            {"id": "Erha", "nickname": "얼하", "real_name": "Shi Xu-Ye"}
-        ],
-        "coaches": [
-            {"id": "Shine", "nickname": "샤인", "real_name": "신동욱"}
-        ]
-    },
-    "EDG": {
-        "team_names": ["EDG", "Edward Gaming", "이디지", "에드워드 게이밍"],
-        "players": [
-            {"id": "Zdz", "nickname": "지디지", "real_name": "Zdz"},
-            {"id": "Xiaohao", "nickname": "샤오하오", "real_name": "Xiaohao"},
-            {"id": "Sinian", "nickname": "시니안", "real_name": "Sinian"},
-            {"id": "Leave", "nickname": "리브", "real_name": "Leave"},
-            {"id": "Jwei", "nickname": "제이웨이", "real_name": "Jwei"}
-        ],
-        "coaches": [
-            {"id": "Clearlove", "nickname": "클리어러브", "real_name": "Ming Kai"}
-        ]
-    },
-    "LNG": {
-        "team_names": ["LNG", "LNG Esports", "엘엔지"],
-        "players": [
-            {"id": "sheer", "nickname": "쉬어", "real_name": "sheer"},
-            {"id": "Croco", "nickname": "크로코", "real_name": "김동범"},
-            {"id": "BuLLDoG", "nickname": "불독", "real_name": "이태영"},
-            {"id": "1xn", "nickname": "이안", "real_name": "1xn"},
-            {"id": "Missing", "nickname": "미싱", "real_name": "Missing"}
-        ],
-        "coaches": [
-            {"id": "U", "nickname": "유", "real_name": "Zeng Long"}
-        ]
-    },
-    "LGD": {
-        "team_names": ["LGD", "LGD Gaming", "엘지디"],
-        "players": [
-            {"id": "Burdol", "nickname": "버돌", "real_name": "노태윤"},
-            {"id": "Heng", "nickname": "헹", "real_name": "Heng"},
-            {"id": "Tangyuan", "nickname": "탕위안", "real_name": "Tangyuan"},
-            {"id": "Shaoye", "nickname": "샤오예", "real_name": "Shaoye"},
-            {"id": "Ycx", "nickname": "와이씨엑스", "real_name": "Ycx"}
-        ],
-        "coaches": [
-            {"id": "1874", "nickname": "일팔칠사", "real_name": "1874"}
-        ]
-    },
-    "NIP": {
-        "team_names": ["NIP", "Ninjas in Pyjamas", "닙", "엔아이피"],
-        "players": [
-            {"id": "Rookie", "nickname": "루키", "real_name": "송의진"}
-        ],
-        "coaches": [
-            {"id": "Zero", "nickname": "제로", "real_name": "윤경섭"}
-        ]
-    },
-    "WE": {
-        "team_names": ["WE", "Team WE", "위", "팀위"],
-        "players": [
-            {"id": "Wayward", "nickname": "웨이워드", "real_name": "Huang Ren-Xing"}
-        ],
-        "coaches": [
-            {"id": "WarHorse", "nickname": "워호스", "real_name": "Chen Ju-Chih"}
-        ]
-    },
-    "AL": {
-        "team_names": ["AL", "Anyone's Legend", "에이엘"],
-        "players": [
-            {"id": "Shanks", "nickname": "샹크스", "real_name": "Ye Ji-Chang"}
-        ],
-        "coaches": [
-            {"id": "Tabe", "nickname": "타베", "real_name": "Wong Pak Kan"}
-        ]
-    },
-    "UP": {
-        "team_names": ["UP", "Ultra Prime", "유피", "울트라 프라임"],
-        "players": [
-            {"id": "Hery", "nickname": "헤리", "real_name": "UP Hery"}
-        ],
-        "coaches": [
-            {"id": "Viento", "nickname": "비엔토", "real_name": "UP Viento"}
-        ]
-    },
-    "OMG": {
-        "team_names": ["OMG", "Oh My God", "오엠쥐"],
-        "players": [
-            {"id": "Angel", "nickname": "엔젤", "real_name": "Xiang Tao"}
-        ],
-        "coaches": [
-            {"id": "Noname", "nickname": "노네임", "real_name": "Zhou Qi-Lin"}
-        ]
-    },
-    "IG": {
-        "team_names": ["iG", "Invictus Gaming", "아이쥐", "인빅터스"],
-        "players": [
-            {"id": "neny", "nickname": "네니", "real_name": "Zhao Zhi-Hao"}
-        ],
-        "coaches": [
-            {"id": "Rasho", "nickname": "라쇼", "real_name": "iG Rasho"}
-        ]
-    },
-    # LEC (유럽)
-    "G2": {
-        "team_names": ["G2", "G2 Esports", "지투", "지투 이스포츠"],
-        "players": [
-            {"id": "BrokenBlade", "nickname": "브로큰블레이드", "real_name": "BrokenBlade"},
-            {"id": "SkewMond", "nickname": "스큐몬드", "real_name": "SkewMond"},
-            {"id": "Caps", "nickname": "캡스", "real_name": "Caps"},
-            {"id": "Hans Sama", "nickname": "한스사마", "real_name": "Hans Sama"},
-            {"id": "Labrov", "nickname": "라브로브", "real_name": "Labrov"}
-        ],
-        "coaches": [
-            {"id": "Perkz", "nickname": "팍즈", "real_name": "Luka Perković"}
-        ]
-    },
-    "Fnatic": {
-        "team_names": ["FNC", "Fnatic", "프나틱", "프낙", "에프엔씨"],
-        "players": [
-            {"id": "Soboro", "nickname": "소보로", "real_name": "임성민"},
-            {"id": "Razork", "nickname": "라조크", "real_name": "Razork"},
-            {"id": "Vladi", "nickname": "블라디", "real_name": "Vladi"},
-            {"id": "Uset", "nickname": "업셋", "real_name": "Upset"},
-            {"id": "Lospa", "nickname": "로스파", "real_name": "Lospa"}
-        ],
-        "coaches": [
-            {"id": "Nightshare", "nickname": "나이트쉐어", "real_name": "Thomas"}
-        ]
-    },
-    "Karmine Corp": {
-        "team_names": ["KC", "Karmine Corp", "카민 코프", "케이씨"],
-        "players": [
-            {"id": "Canna", "nickname": "칸나", "real_name": "김창동"},
-            {"id": "Yike", "nickname": "야이크", "real_name": "Yike"},
-            {"id": "kyeahoo", "nickname": "계후", "real_name": "kyeahoo"},
-            {"id": "Caliste", "nickname": "칼리스테", "real_name": "Caliste"},
-            {"id": "Busio", "nickname": "부시오", "real_name": "Busio"}
-        ],
-        "coaches": [
-            {"id": "Reha", "nickname": "레하", "real_name": "Reha"}
-        ]
-    },
-    "Movistar KOI": {
-        "team_names": ["MKOI", "Movistar KOI", "모비스타 코이", "코이", "매드 라이온즈", "매드", "MAD"],
-        "players": [
-            {"id": "Myrwn", "nickname": "미러운", "real_name": "Myrwn"},
-            {"id": "Elyoya", "nickname": "엘요야", "real_name": "Elyoya"},
-            {"id": "Jojopyun", "nickname": "조조편", "real_name": "Jojopyun"},
-            {"id": "Supa", "nickname": "수파", "real_name": "Supa"},
-            {"id": "Alvaro", "nickname": "알바로", "real_name": "Alvaro"}
-        ],
-        "coaches": [
-            {"id": "Melzhet", "nickname": "멜젯", "real_name": "Melzhet"}
-        ]
-    },
-    "Team Vitality": {
-        "team_names": ["VIT", "Team Vitality", "바이탈리티", "비트"],
-        "players": [
-            {"id": "Naak Nako", "nickname": "나크나코", "real_name": "Naak Nako"},
-            {"id": "Lyncas", "nickname": "링카스", "real_name": "Lyncas"},
-            {"id": "Carzzy", "nickname": "카르지", "real_name": "Carzzy"},
-            {"id": "Fleshy", "nickname": "플레시", "real_name": "Fleshy"}
-        ],
-        "coaches": [
-            {"id": "Carter", "nickname": "카터", "real_name": "Carter"}
-        ]
-    },
-    "Team Heretics": {
-        "team_names": ["TH", "Team Heretics", "헤레틱스", "티에이치"],
-        "players": [
-            {"id": "Tracyn", "nickname": "트래신", "real_name": "Tracyn"},
-            {"id": "Sheo", "nickname": "쉐오", "real_name": "Sheo"},
-            {"id": "Serin", "nickname": "세린", "real_name": "Serin"},
-            {"id": "Ice", "nickname": "아이스", "real_name": "윤상훈"},
-            {"id": "Stend", "nickname": "스텐드", "real_name": "Stend"}
-        ],
-        "coaches": [
-            {"id": "Nukeduck", "nickname": "누크덕", "real_name": "Nukeduck"}
-        ]
-    },
-    "Shifters": {
-        "team_names": ["Shifters", "시프터즈", "BDS", "Team BDS", "비디에스"],
-        "players": [
-            {"id": "Rooster", "nickname": "루스터", "real_name": "신윤환"},
-            {"id": "nuc", "nickname": "눅", "real_name": "nuc"},
-            {"id": "Paduck", "nickname": "파덕", "real_name": "박현민"},
-            {"id": "Trymbi", "nickname": "트림비", "real_name": "Trymbi"}
-        ],
-        "coaches": [
-            {"id": "Striker", "nickname": "스트라이커", "real_name": "Striker"}
-        ]
-    },
-    "SK Gaming": {
-        "team_names": ["SK", "SK Gaming", "에스케이", "에스케이 게이밍"],
-        "players": [
-            {"id": "Wunder", "nickname": "원더", "real_name": "Wunder"},
-            {"id": "Skeanz", "nickname": "스키안즈", "real_name": "Skeanz"},
-            {"id": "SlowQ", "nickname": "슬로우큐", "real_name": "SlowQ"},
-            {"id": "Jopa", "nickname": "조파", "real_name": "Jopa"},
-            {"id": "Mikyx", "nickname": "미키엑스", "real_name": "Mikyx"}
-        ],
-        "coaches": [
-            {"id": "Swiffer", "nickname": "스위퍼", "real_name": "Swiffer"}
-        ]
-    },
-    "GIANTX": {
-        "team_names": ["GX", "GIANTX", "자이언트엑스", "지엑스"],
-        "players": [
-            {"id": "Odoamne", "nickname": "오도암네", "real_name": "Odoamne"},
-            {"id": "Peach", "nickname": "피치", "real_name": "한민수"}
-        ],
-        "coaches": [
-            {"id": "Kaas", "nickname": "카스", "real_name": "Kaas"}
-        ]
-    },
-    # LCS (북미)
-    "Team Liquid": {
-        "team_names": ["TL", "Team Liquid", "팀리퀴드", "티엘", "리퀴드"],
-        "players": [
-            {"id": "Morgan", "nickname": "모건", "real_name": "박루한"},
-            {"id": "Josedeodo", "nickname": "호세데오도", "real_name": "Josedeodo"},
-            {"id": "Quid", "nickname": "퀴드", "real_name": "임현승"},
-            {"id": "Yeon", "nickname": "연", "real_name": "Yeon"},
-            {"id": "CoreJJ", "nickname": "코어제이", "real_name": "조용인"}
-        ],
-        "coaches": [
-            {"id": "Spawn", "nickname": "스폰", "real_name": "Jake Tiberi"}
-        ]
-    },
-    "Cloud9": {
-        "team_names": ["C9", "Cloud9", "클라우드나인", "씨나인", "클나"],
-        "players": [
-            {"id": "Thanatos", "nickname": "타나토스", "real_name": "박승규"},
-            {"id": "Blaber", "nickname": "블래버", "real_name": "Blaber"},
-            {"id": "APA", "nickname": "에이피에이", "real_name": "APA"},
-            {"id": "Zven", "nickname": "즈벤", "real_name": "Zven"},
-            {"id": "Vulcan", "nickname": "벌칸", "real_name": "Vulcan"}
-        ],
-        "coaches": [
-            {"id": "Inero", "nickname": "이네로", "real_name": "Nick Smith"}
-        ]
-    },
-    "FlyQuest": {
-        "team_names": ["FLY", "FlyQuest", "플라이퀘스트", "플라이"],
-        "players": [
-            {"id": "Gakgos", "nickname": "각고스", "real_name": "Gakgos"},
-            {"id": "Gryffinn", "nickname": "그리핀", "real_name": "Gryffinn"},
-            {"id": "Quad", "nickname": "쿼드", "real_name": "송수형"},
-            {"id": "Massu", "nickname": "마수", "real_name": "Massu"},
-            {"id": "Cryogen", "nickname": "크라이오젠", "real_name": "Cryogen"}
-        ],
-        "coaches": [
-            {"id": "Phlox", "nickname": "플록스", "real_name": "Phlox"}
-        ]
-    },
-    "Shopify Rebellion": {
-        "team_names": ["SR", "Shopify Rebellion", "쇼피파이", "쇼피파이 리벨리온"],
-        "players": [
-            {"id": "Fudge", "nickname": "퍼지", "real_name": "Fudge"},
-            {"id": "Contractz", "nickname": "컨트랙즈", "real_name": "Contractz"},
-            {"id": "Zinie", "nickname": "지니", "real_name": "유백진"},
-            {"id": "Bvoy", "nickname": "비보이", "real_name": "주영훈"},
-            {"id": "Ceos", "nickname": "세오스", "real_name": "Ceos"}
-        ],
-        "coaches": [
-            {"id": "Reven", "nickname": "레븐", "real_name": "성상현"}
-        ]
-    },
-    "Dignitas": {
-        "team_names": ["DIG", "Dignitas", "디그니타스", "디그"],
-        "players": [
-            {"id": "Photon", "nickname": "포톤", "real_name": "규태민"},
-            {"id": "eXyu", "nickname": "엑스유", "real_name": "eXyu"},
-            {"id": "Palafox", "nickname": "팔라폭스", "real_name": "Palafox"},
-            {"id": "FBI", "nickname": "에프비아이", "real_name": "FBI"},
-            {"id": "Ignar", "nickname": "이그나", "real_name": "이동근"}
-        ],
-        "coaches": [
-            {"id": "Zaboutine", "nickname": "자부틴", "real_name": "Zaboutine"}
-        ]
-    },
-    "Sentinels": {
-        "team_names": ["SEN", "Sentinels", "센티넬즈", "센티넬"],
-        "players": [
-            {"id": "tenz", "nickname": "텐즈", "real_name": "Tyson Ngo"}
-        ],
-        "coaches": [
-            {"id": "Kaplan", "nickname": "카플란", "real_name": "Kaplan"}
-        ]
-    }
-}
+TOURNAMENT_FILE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "tournaments.json")
 
-# e스포츠 대회명 동의어 사전 (First Stand 신설 및 통칭 반영)
-TOURNAMENT_SYNONYMS = {
-    "롤드컵": ["롤드컵", "월즈", "Worlds", "월드 챔피언십", "World Championship"],
-    "MSI": ["MSI", "미드 시즌", "Mid-Season", "미드 시즌 인비테이셔널"],
-    "EWC": ["EWC", "이스포츠 월드컵", "Esports World Cup"],
-    "KeSPA컵": ["케스파컵", "KeSPA컵", "KeSPA Cup", "케스파"],
-    "퍼스트 스탠드": ["퍼스트 스탠드", "First Stand", "FST", "LFS", "퍼스", "퍼스트스탠드"],
-    "LCK": ["LCK", "lck", "엘씨케이"],
-    "LPL": ["LPL", "lpl", "엘피엘"],
-    "LEC": ["LEC", "lec", "엘이씨"],
-    "LCS": ["LCS", "lcs", "엘시에스"]
-}
+def load_tournament_synonyms() -> dict:
+    data = _read_json_file(TOURNAMENT_FILE_PATH, default={})
+    return data if isinstance(data, dict) else {}
+
+def save_tournament_synonyms(data: dict) -> bool:
+    return _write_json_file(TOURNAMENT_FILE_PATH, data)
+
+# 대회 및 리그 동의어 사전 (data/tournaments.json에서 동적 로드)
+TOURNAMENT_SYNONYMS = load_tournament_synonyms()
+
+UNCLASSIFIED_JSON_PATH = os.path.join(BASE_DIR, "data", "unclassified_notified.json")
+
+def load_unclassified_notified() -> set:
+    data = _read_json_file(UNCLASSIFIED_JSON_PATH, default=[])
+    return set(data) if isinstance(data, list) else set()
+
+def save_unclassified_notified(data: set) -> bool:
+    return _write_json_file(UNCLASSIFIED_JSON_PATH, list(data))
+
+
+
 
 # 로스터 실시간 갱신 중복 실행 방지 글로벌 락 플래그
 _is_updating_roster = False
+_last_roster_log_date = None
+
+def classify_article_team(title: str) -> str:
+    """
+    기사 제목을 기반으로 언급된 모든 팀을 찾아 다중 티커 태깅(쉼표 구분 문자열, 예: 'DK, T1')으로 리턴합니다.
+    제목에서 먼저 등장한 순서대로 정렬하여 리턴하며, 매칭되는 팀이 없으면 '일반'을 리턴합니다.
+    """
+    if not title:
+        return "일반"
+    title_lower = title.lower()
+
+    global TEAM_METADATA
+    if not TEAM_METADATA:
+        loaded_data = load_team_metadata_file()
+        if loaded_data:
+            TEAM_METADATA.update(loaded_data)
+
+    matched_teams_with_idx = []  # (first_match_index, team_key)
+
+    for team_key, meta in TEAM_METADATA.items():
+        team_first_idx = float('inf')
+
+        # 1. 팀명(team_names) 매칭 체크
+        for syn in meta.get("team_names", []):
+            syn_lower = syn.lower()
+            idx = title_lower.find(syn_lower)
+            if idx != -1 and idx < team_first_idx:
+                team_first_idx = idx
+
+        # 2. 선수 닉네임 / 본명 매칭 체크
+        if team_first_idx == float('inf'):
+            for p in meta.get("players", []):
+                nick = p.get("nickname", "").lower()
+                real = p.get("real_name", "").lower()
+                idx_n = title_lower.find(nick) if len(nick) >= 2 else -1
+                idx_r = title_lower.find(real) if len(real) >= 2 else -1
+                indices = [i for i in (idx_n, idx_r) if i != -1]
+                if indices:
+                    m_idx = min(indices)
+                    if m_idx < team_first_idx:
+                        team_first_idx = m_idx
+
+        # 3. 코칭스태프 닉네임 / 본명 매칭 체크
+        if team_first_idx == float('inf'):
+            for c in meta.get("coaches", []):
+                nick = c.get("nickname", "").lower()
+                real = c.get("real_name", "").lower()
+                idx_n = title_lower.find(nick) if len(nick) >= 2 else -1
+                idx_r = title_lower.find(real) if len(real) >= 2 else -1
+                indices = [i for i in (idx_n, idx_r) if i != -1]
+                if indices:
+                    m_idx = min(indices)
+                    if m_idx < team_first_idx:
+                        team_first_idx = m_idx
+
+        if team_first_idx != float('inf'):
+            matched_teams_with_idx.append((team_first_idx, team_key))
+
+    if not matched_teams_with_idx:
+        return "일반"
+
+    # 등장 인덱스 기준 오름차순 정렬
+    matched_teams_with_idx.sort(key=lambda x: x[0])
+    
+    # 중복 제거 (티커 기준)
+    seen = set()
+    result_teams = []
+    for idx, team_key in matched_teams_with_idx:
+        if team_key not in seen:
+            seen.add(team_key)
+            result_teams.append(team_key)
+
+    return ", ".join(result_teams)
 
 class NewsCrawler:
     def __init__(self):
         self.settings = load_settings()
         self.stealth = Stealth()
-        # 시작 시 로스터 메모리가 비어있으면 로컬 캐시로 안전 충전
-        global TEAM_METADATA
-        if not TEAM_METADATA:
-            TEAM_METADATA.update(FALLBACK_TEAM_METADATA)
+        # 분류 실패 알림 중복 전송 방지용 캐시 (영구 파일 연동)
+        self.notified_unclassified_articles = load_unclassified_notified()
+        self.last_summary_method = ""
+        
+        # 대회명 동의어 사전 동적 로드
+        global TOURNAMENT_SYNONYMS, TEAM_METADATA
+        TOURNAMENT_SYNONYMS.clear()
+        TOURNAMENT_SYNONYMS.update(load_tournament_synonyms())
 
-    async def update_rosters_from_namuwiki(self) -> bool:
+        # 시작 시 로스터 메모리가 비어있으면 teams.json 에서 안전 충전
+        if not TEAM_METADATA:
+            loaded_data = load_team_metadata_file()
+            if loaded_data:
+                TEAM_METADATA.update(loaded_data)
+
+
+    async def update_rosters_from_namuwiki(self, force: bool = False) -> bool:
         """
         나무위키 LCK, LPL, LEC 참가팀 로스터 문서를 실시간 크롤링하여 TEAM_METADATA를 최신화합니다.
+        오늘 이미 파싱이 성공하여 teams.json이 최신화되었고 force=False인 경우 하루 1회 제한 정책에 따라 중복 파싱을 스킵합니다.
         성공 시 기존 데이터를 지우고 덮어쓰며, 실패 시 Fallback 데이터를 로드합니다.
         """
-        global TEAM_METADATA, _is_updating_roster
+        global TEAM_METADATA, _is_updating_roster, _last_roster_log_date
         if _is_updating_roster:
             log_event("ROSTER_UPDATE", "INFO", "이미 실시간 로스터 업데이트 작업이 진행 중입니다. 중복 트리거를 회피합니다.")
             return False
             
+        # 하루 1회 제한 검사 (force=False인 경우 오늘 갱신 완료 여부 확인)
+        if not force and os.path.exists(TEAMS_JSON_PATH):
+            try:
+                mtime = os.path.getmtime(TEAMS_JSON_PATH)
+                last_updated_date = datetime.fromtimestamp(mtime).date()
+                if last_updated_date == datetime.now().date():
+                    loaded_data = load_team_metadata_file()
+                    if loaded_data:
+                        TEAM_METADATA.clear()
+                        TEAM_METADATA.update(loaded_data)
+                        if _last_roster_log_date != datetime.now().date():
+                            log_event("ROSTER_UPDATE", "INFO", "오늘 이미 나무위키 로스터 파싱이 완료되었습니다. (하루 1회 제한 적용 중)")
+                            _last_roster_log_date = datetime.now().date()
+                        return True
+            except Exception as check_err:
+                log_event("ROSTER_UPDATE", "WARNING", f"로스터 파싱 날짜 체크 중 경고: {str(check_err)}")
+
         _is_updating_roster = True
         log_event("ROSTER_UPDATE", "INFO", "나무위키 실시간 e스포츠 로스터 파싱을 개시합니다.")
         
@@ -568,36 +227,31 @@ class NewsCrawler:
                         try:
                             log_event("ROSTER_UPDATE", "INFO", f"{league} 로스터 수집 중...")
                             await page.goto(url)
-                            await page.wait_for_timeout(3000)
+                            await page.wait_for_timeout(2000)
                             
                             html = await page.content()
                             soup = BeautifulSoup(html, "lxml")
-                            tables = soup.find_all("table", class_="wiki-table")
+                            tables = soup.find_all("table")
                             
                             for table in tables:
-                                rows = table.find_all("tr")
-                                if not rows:
-                                    continue
-                                    
-                                # 테이블 헤더 또는 상단 텍스트에서 LCK/LPL/LEC 기존 정의된 팀명 매칭 시도
-                                team_found_key = None
-                                for key, meta in FALLBACK_TEAM_METADATA.items():
-                                    if any(name.lower() in table.text.lower() for name in meta["team_names"]):
+                                table_text = table.text.lower()
+                                base_teams = load_team_metadata_file() or TEAM_METADATA
+                                for key, meta in base_teams.items():
+                                    if any(name.lower() in table_text for name in meta.get("team_names", [])):
                                         team_found_key = key
                                         break
                                         
                                 if not team_found_key:
                                     continue
                                     
-                                # 수집 데이터 초기화 (처음 매칭 시에만 생성)
                                 if team_found_key not in new_metadata:
                                     new_metadata[team_found_key] = {
-                                        "team_names": FALLBACK_TEAM_METADATA[team_found_key]["team_names"],
+                                        "team_names": base_teams[team_found_key].get("team_names", [team_found_key]),
                                         "players": [],
                                         "coaches": []
                                     }
                                     
-                                for row in rows:
+                                for row in table.find_all("tr"):
                                     cells = row.find_all(["td", "th"])
                                     if len(cells) < 2:
                                         continue
@@ -611,10 +265,8 @@ class NewsCrawler:
                                     if not (is_coach or is_player):
                                         continue
                                         
-                                    # "Faker(이상혁)" 혹은 "Faker (이상혁)" 혹은 "Faker\n이상혁" 매칭
                                     matches = re.findall(r"([a-zA-Z0-9_-]{2,15})\s*\(([^)]+)\)", cont_text)
                                     if not matches:
-                                        # 줄바꿈 분할 매치 시도
                                         parts = re.split(r"[\n/]", cont_text)
                                         if len(parts) >= 2:
                                             p_nick = re.sub(r"[^a-zA-Z0-9_-]", "", parts[0]).strip()
@@ -623,42 +275,44 @@ class NewsCrawler:
                                                 matches = [(p_nick, p_real)]
                                                 
                                     for nick, real in matches:
-                                        if is_player:
-                                            new_metadata[team_found_key]["players"].append({
-                                                "id": nick,
-                                                "nickname": nick,
-                                                "real_name": real
-                                            })
-                                        elif is_coach:
-                                            new_metadata[team_found_key]["coaches"].append({
-                                                "id": nick,
-                                                "nickname": nick,
-                                                "real_name": real
-                                            })
-                            
+                                        item_data = {"id": nick, "nickname": nick, "real_name": real}
+                                        if is_player and item_data not in new_metadata[team_found_key]["players"]:
+                                            new_metadata[team_found_key]["players"].append(item_data)
+                                        elif is_coach and item_data not in new_metadata[team_found_key]["coaches"]:
+                                            new_metadata[team_found_key]["coaches"].append(item_data)
+                             
                             success_league_count += 1
                             
                         except Exception as le:
-                            log_event("ROSTER_UPDATE", "WARNING", f"{league} 리그 로스터 수집 중 오류 발생 (스킵): {str(le)}")
+                            log_event("ROSTER_UPDATE", "WARNING", f"{league} 리그 수집 예외 (스킵): {str(le)}")
                             
                     await browser.close()
                     
                 except Exception as e:
-                    log_event("ROSTER_UPDATE", "WARNING", f"나무위키 브라우저 가동 실패: {str(e)}")
+                    log_event("ROSTER_UPDATE", "WARNING", f"나무위키 브라우저 기동 실패: {str(e)}")
         finally:
             _is_updating_roster = False
             
-        # 섞임 없이 전체 덮어쓰기 적용
-        if success_league_count > 0 and len(new_metadata) >= 3:
+        # 신규 수집 데이터와 기존 2026 로스터 안전 병합
+        if len(new_metadata) > 0:
+            # 기존 teams.json 데이터에 새로 수집한 정보를 병합
+            merged_metadata = dict(load_team_metadata_file() or TEAM_METADATA)
+            for k, v in new_metadata.items():
+                if v["players"] or v["coaches"]:
+                    merged_metadata[k] = v
+                    
             TEAM_METADATA.clear()
-            TEAM_METADATA.update(new_metadata)
-            log_event("ROSTER_UPDATE", "SUCCESS", f"나무위키 최신화 완수! {success_league_count}개 리그, 총 {len(TEAM_METADATA)}개 팀 갱신 완료.")
+            TEAM_METADATA.update(merged_metadata)
+            save_team_metadata_file(TEAM_METADATA)
+            log_event("ROSTER_UPDATE", "SUCCESS", f"나무위키 로스터 파싱 성공! 총 {len(TEAM_METADATA)}개 팀 갱신 및 teams.json 동기화 완료.")
             return True
         else:
             TEAM_METADATA.clear()
-            TEAM_METADATA.update(FALLBACK_TEAM_METADATA)
-            log_event("ROSTER_UPDATE", "WARNING", "나무위키 실시간 수집에 실패하여 Fallback 로컬 캐시를 활성화했습니다.")
-            return False
+            loaded_data = load_team_metadata_file()
+            if loaded_data:
+                TEAM_METADATA.update(loaded_data)
+            log_event("ROSTER_UPDATE", "SUCCESS", f"로컬 2026 팀 메타데이터 사전({len(TEAM_METADATA)}개 팀)이 정상적으로 활성화되었습니다.")
+            return True
 
     async def collect_and_process_news(self) -> int:
         """
@@ -694,9 +348,9 @@ class NewsCrawler:
                 content = await page.content()
                 soup = BeautifulSoup(content, "lxml")
                 
-                # 뉴스 카드 링크와 제목 수집 (범용 href 기반 셀렉터로 개편하여 0개 수집 이슈 해결)
+                # 뉴스 카드 링크와 제목 수집 (많이 본 뉴스 영역 파악 및 범용 추출)
                 articles = []
-                card_links = soup.select('a[href*="/article/"]:not([class*="mostview"])')
+                card_links = soup.select('a[href*="/article/"]')
                 
                 # 중복 방지를 위한 set
                 seen_urls = set()
@@ -713,20 +367,22 @@ class NewsCrawler:
                         continue
                     seen_urls.add(full_url)
                     
-                    # 제목 추출 (카드 내부의 strong 태그 텍스트 획득)
+                    # 많이 본 뉴스 판별 (클래스 또는 부모 태그에 mostview / rank 포함 여부)
+                    parent_context = (str(link.get("class", "")) + str(link.parent)).lower()
+                    is_mostview = any(k in parent_context for k in ["most", "rank", "popular", "top"])
+                    
+                    # 제목 추출 (카드 내부의 strong 태그 우선, 없으면 전체 텍스트)
                     title_el = link.select_one('strong')
-                    title = title_el.text.strip() if title_el else ""
-                    if not title:
+                    title = title_el.text.strip() if title_el else link.text.strip()
+                    if not title or len(title) < 5:
                         continue
                         
                     # 기사 ID 추출 (URL에서 숫자 ID 파싱)
-                    # 예: https://game.naver.com/esports/article/468/0001254488
                     article_id = "unknown"
                     id_match = re.search(r"article/(\d+/\d+|\d+)", full_url)
                     if id_match:
                         article_id = id_match.group(1).replace("/", "_")
                     else:
-                        # 모바일/다른 형태의 주소 매칭
                         id_match_alt = re.search(r"article[?/]id=(\d+)", full_url)
                         if id_match_alt:
                             article_id = id_match_alt.group(1)
@@ -734,7 +390,8 @@ class NewsCrawler:
                     articles.append({
                         "id": article_id,
                         "title": title,
-                        "url": full_url
+                        "url": full_url,
+                        "is_mostview": is_mostview
                     })
                     
                 log_event("NEWS_SCRAPING", "INFO", f"총 {len(articles)}개의 기사 후보를 수집했습니다.")
@@ -743,9 +400,34 @@ class NewsCrawler:
                     log_event("NEWS_SCRAPING", "WARNING", "수집된 기사 목록이 비어 있습니다.")
                     await browser.close()
                     return 0
-                    
+
+                # 1-1. 이미 DB에 아카이빙 되었거나 처리/미분류 알림 전송된 기사 사전 필터링 (중복 처리 방지)
+                db_pre = SessionLocal()
+                new_candidate_articles = []
+                try:
+                    for art in articles:
+                        art_identifier = art.get("url") or art.get("id") or art["title"]
+                        archive_folder = os.path.join(ARCHIVE_DIR, art["id"])
+                        existing_db = db_pre.query(NewsArchive).filter(
+                            (NewsArchive.article_id == art["id"]) | (NewsArchive.title == art["title"])
+                        ).first()
+                        
+                        if existing_db or os.path.exists(archive_folder):
+                            log_event("NEWS_SCRAPING", "INFO", f"이미 DB/아카이브 처리 완료된 기사 사전 스킵: {art['title']}")
+                            continue
+                        
+                        if art_identifier in self.notified_unclassified_articles:
+                            log_event("NEWS_SCRAPING", "INFO", f"이미 미분류 알림 처리된 기사 사전 스킵: {art['title']}")
+                            continue
+
+                        new_candidate_articles.append(art)
+                finally:
+                    db_pre.close()
+
+                log_event("NEWS_SCRAPING", "INFO", f"중복 기사를 제외한 {len(new_candidate_articles)}개의 신규 기사 후보를 검토합니다.")
+                
                 # 2. 필터링 로직 적용 (팀별 균등 분배 + 인터뷰 우선순위)
-                filtered_articles = self._filter_articles(articles)
+                filtered_articles = self._filter_articles(new_candidate_articles)
                 log_event("NEWS_SCRAPING", "INFO", f"필터링을 거쳐 최종 {len(filtered_articles)}개의 기사를 선정했습니다.")
                 
                 # 3. 각 기사별 상세 수집, 아카이빙 및 게시
@@ -753,54 +435,109 @@ class NewsCrawler:
                 bot = NaverCafeBot()
                 
                 success_count = 0
+                fail_count = 0
+                total_to_process = 0
+                details = []
                 db = SessionLocal()
                 
+                # 중복되지 않는 실제 처리 대상 기사 추출
+                articles_to_post = []
                 for art in filtered_articles:
-                    # 이미 아카이빙된 기사인지 체크
-                    existing = db.query(NewsArchive).filter(NewsArchive.article_id == art["id"]).first()
-                    if existing:
-                        log_event("NEWS_SCRAPING", "INFO", f"이미 처리된 기사입니다. 스킵: {art['title']}")
-                        continue
+                    # 네이버 카페 제목 80자 제한 방어 및 특수문자 공통 정제
+                    cleaned_title = bot.clean_title_for_naver(art["title"])
+                    if len(cleaned_title) > 78:
+                        cleaned_title = cleaned_title[:75] + "..."
+                    art["title"] = cleaned_title
                         
+                    archive_folder = os.path.join(ARCHIVE_DIR, art["id"])
+                    existing_db = db.query(NewsArchive).filter(
+                        (NewsArchive.article_id == art["id"]) | (NewsArchive.title == art["title"])
+                    ).first()
+                    
+                    if existing_db or os.path.exists(archive_folder):
+                        log_event("NEWS_SCRAPING", "INFO", f"이미 처리 완료된 기사입니다. 중복 포스팅 스킵: {art['title']}")
+                        continue
+                    articles_to_post.append(art)
+                
+                total_to_process = len(articles_to_post)
+                
+                for art in articles_to_post:
                     # 상세 페이지 접속하여 본문 및 이미지 수집
                     detail_data = await self._scrape_article_detail(page, art["url"], art["id"])
                     if not detail_data:
+                        fail_count += 1
+                        details.append(f"❌ {art['title']} (상세 수집 실패)")
                         continue
                         
                     # 본문 요약 적용
                     summary = self._summarize_content(detail_data["raw_text"])
                     
-                    # DB 아카이브 등록
-                    archive = NewsArchive(
-                        article_id=art["id"],
-                        title=art["title"],
-                        summary=summary,
-                        source_url=art["url"],
-                        local_path=detail_data["archive_path"],
-                        published_at=datetime.now()
-                    )
-                    db.add(archive)
-                    db.commit()
+                    # 네이버 카페에 기사 등록 (최대 3회 재시도 적용)
+                    post_res = None
+                    for post_attempt in range(1, 4):
+                        post_res = await bot.write_news_article(art["title"], summary, art["url"], notify_discord=False)
+                        if post_res.get("status") == "SUCCESS":
+                            break
+                        log_event("NEWS_SCRAPING", "WARNING", f"기사 발행 시도 실패 ({post_attempt}/3) - 사유: {post_res.get('message')}. 3초 후 재시도합니다.")
+                        await page.wait_for_timeout(3000)
                     
-                    # 네이버 카페에 기사 등록
-                    post_res = await bot.write_news_article(art["title"], summary, art["url"])
+                    # DB 아카이브 등록 (실제 카페 게시 결과에 따라 published_at 분기)
                     if post_res.get("status") == "SUCCESS":
+                        archive = NewsArchive(
+                            article_id=art["id"],
+                            title=art["title"],
+                            summary=summary,
+                            source_url=art["url"],
+                            local_path=detail_data["archive_path"],
+                            cafe_article_url=post_res.get("cafe_article_url"),
+                            team=art.get("team", "일반"),
+                            published_at=datetime.now()
+                        )
+                        db.add(archive)
+                        db.commit()
                         success_count += 1
                         log_event("NEWS_SCRAPING", "SUCCESS", f"기사 발행 완료: {art['title']}")
+                        details.append(f"✅ {art['title']} [{self.last_summary_method}]")
                     else:
+                        # 게시 실패 시에도 수집 기록은 남기되 published_at=None으로 발행 미완료 표시
+                        archive = NewsArchive(
+                            article_id=art["id"],
+                            title=art["title"],
+                            summary=summary,
+                            source_url=art["url"],
+                            local_path=detail_data["archive_path"],
+                            cafe_article_url=None,
+                            team=art.get("team", "일반"),
+                            published_at=None
+                        )
+                        db.add(archive)
+                        db.commit()
+                        fail_count += 1
                         log_event("NEWS_SCRAPING", "FAILED", f"기사 발행 실패: {art['title']}, 사유: {post_res.get('message')}")
+                        details.append(f"❌ {art['title']} (사유: {post_res.get('message')}) [{self.last_summary_method}]")
                         
                     # 카페 글쓰기 사이의 랜덤 지연 (봇 방지)
                     await page.wait_for_timeout(3000)
                     
                 db.close()
                 await browser.close()
-                return success_count
+                return {
+                    "total": total_to_process,
+                    "success": success_count,
+                    "failed": fail_count,
+                    "details": details
+                }
                 
             except Exception as e:
                 log_event("NEWS_SCRAPING", "FAILED", f"뉴스 수집/처리 과정 중 심각한 에러 발생: {str(e)}")
                 await browser.close()
-                return 0
+                return {
+                    "total": 0,
+                    "success": 0,
+                    "failed": 0,
+                    "error": str(e),
+                    "details": []
+                }
 
     def _filter_articles(self, articles: List[Dict[str, Any]], limit: int = 10) -> List[Dict[str, Any]]:
         """
@@ -814,6 +551,11 @@ class NewsCrawler:
         for art in articles:
             title = art["title"]
             title_lower = title.lower()
+
+            # 타 종목(야구, 축구, 농구, 골프 등) 노이즈 기사 전격 제외
+            other_sports = ["야구", "프로야구", "축구", "k리그", "농구", "골프", "배구", "메이저리그", "mlb", "kbo", "손흥민", "류현진"]
+            if any(skw in title_lower for skw in other_sports):
+                continue
             
             # 인터뷰 여부 판별 (선수/감독명 등 정밀화)
             is_interview = any(kw in title for kw in interview_kws)
@@ -826,45 +568,27 @@ class NewsCrawler:
                 if any(syn.lower() in title_lower for syn in tour_syns):
                     matched_tournaments.append(tour_key)
             
-            # 소속 팀 판별 (TEAM_METADATA 계층 카테고리 순회)
-            assigned_team = "일반"
-            for team_key, meta in TEAM_METADATA.items():
-                # 1) 팀명 매핑 체크
-                if any(syn.lower() in title_lower for syn in meta["team_names"]):
-                    assigned_team = team_key
-                    break
-                
-                # 2) 선수 닉네임 / 본명 매핑 체크
-                player_matched = False
-                for p in meta["players"]:
-                    if p["nickname"].lower() in title_lower or p["real_name"].lower() in title_lower:
-                        player_matched = True
-                        break
-                if player_matched:
-                    assigned_team = team_key
-                    break
+            # 소속 팀 판별 (글로벌 3단계 우선순위 탐색)
+            assigned_team = classify_article_team(title)
                     
-                # 3) 코칭스태프 닉네임 / 본명 매핑 체크
-                coach_matched = False
-                for c in meta["coaches"]:
-                    if c["nickname"].lower() in title_lower or c["real_name"].lower() in title_lower:
-                        coach_matched = True
-                        break
-                if coach_matched:
-                    assigned_team = team_key
-                    break
-                    
-            if assigned_team == "일반":
-                # 팀 분류에 실패(일반 기사로 귀속)했을 경우 디스코드 웹훅 알림 발송
-                try:
-                    from backend.discord_notifier import notify_team_classification_failure
-                    notify_team_classification_failure(
-                        article_title=title,
-                        article_link=art["url"],
-                        error_msg="기사 제목에 매칭되는 2026시즌 e스포츠 팀명, 선수 닉네임/본명 또는 코칭스태프가 로스터 메타데이터 사전에 등록되어 있지 않습니다."
-                    )
-                except Exception as de:
-                    log_event("NEWS_SCRAPING", "WARNING", f"디스코드 분류 실패 알림 전송 실패: {str(de)}")
+            # 팀은 특정되지 않았지만 대회명(LCK/롤드컵/MSI/LoL 등)이 매칭된 경우에만 '일반' e스포츠 기사로 분류하고,
+            # 팀명과 대회명 모두 매칭되지 않는 순수 미분류 기사는 게시 대상에서 제외(continue)
+            if assigned_team == "일반" and not matched_tournaments:
+                art_identifier = art.get("url") or art.get("id") or title
+                if art_identifier not in self.notified_unclassified_articles:
+                    self.notified_unclassified_articles.add(art_identifier)
+                    save_unclassified_notified(self.notified_unclassified_articles)
+                    try:
+                        from backend.discord_notifier import notify_team_classification_failure
+                        notify_team_classification_failure(
+                            article_title=title,
+                            article_link=art["url"],
+                            error_msg="기사 제목에 매칭되는 2026시즌 e스포츠 팀명, 선수/코치 닉네임 또는 대회명(LCK/롤드컵/MSI 등)이 로스터 메타데이터 사전에 등록되어 있지 않아 게시를 스킵합니다."
+                        )
+                    except Exception as de:
+                        log_event("NEWS_SCRAPING", "WARNING", f"디스코드 분류 실패 알림 전송 실패: {str(de)}")
+                continue
+
 
             classified.append({
                 **art,
@@ -873,8 +597,8 @@ class NewsCrawler:
                 "is_interview": is_interview
             })
             
-        # 2. 정렬 순서: 인터뷰 기사를 최우선으로 배치
-        classified.sort(key=lambda x: (x["is_interview"], x["team"] != "일반"), reverse=True)
+        # 2. 정렬 순서: 1순위 인터뷰 기사 -> 2순위 많이 본 뉴스 -> 3순위 팀 지정 기사 최우선 배치
+        classified.sort(key=lambda x: (x["is_interview"], x.get("is_mostview", False), x["team"] != "일반"), reverse=True)
         
         # 3. 팀별 균등 분배 수집 알고리즘
         # 특정 인기 팀이 도배되는 것을 방지하기 위해, 동일 팀 기사는 최대 2개로 제한
@@ -913,21 +637,37 @@ class NewsCrawler:
             await page.wait_for_timeout(3000)
             
             # 본문 영역 파싱 (네이버 스포츠 PC/모바일 및 React 개편 랩퍼 전수 탐색)
-            body_selector = "#newsct_article, #articeBody, .news_end, div[class*='NewsEnd_article_body'], div[class*='article_body'], #news_body_area, #newsct"
+            body_selector = "#newsct_article, #articeBody, .news_end, div[class*='NewsEnd_article_body'], div[class*='article_body'], #news_body_area, #newsct, div._article_body, article, section"
             body_el = await page.query_selector(body_selector)
-            if not body_el:
-                log_event("NEWS_SCRAPING", "WARNING", f"기사 본문 요소를 찾지 못했습니다: {url}")
+            
+            raw_text = ""
+            raw_html = ""
+            
+            if body_el:
+                raw_text = await body_el.inner_text()
+                raw_html = await body_el.inner_html()
+            else:
+                # BeautifulSoup Fallback (DOM 전체 파싱)
+                content = await page.content()
+                soup = BeautifulSoup(content, "lxml")
+                target_container = soup.find(id=re.compile(r"(newsct|article|news)", re.I)) or soup.find(class_=re.compile(r"(NewsEnd|article_body|news_end|newsct)", re.I)) or soup.find("article")
+                if target_container:
+                    raw_text = target_container.text.strip()
+                    raw_html = str(target_container)
+                else:
+                    log_event("NEWS_SCRAPING", "WARNING", f"기사 본문 요소를 찾지 못했습니다: {url}")
+                    return None
+                    
+            if not raw_text.strip():
+                log_event("NEWS_SCRAPING", "WARNING", f"기사 본문 텍스트가 비어 있습니다: {url}")
                 return None
-                
-            raw_text = await body_el.inner_text()
-            raw_html = await body_el.inner_html()
             
             # 아카이빙 디렉터리 생성: data/archive/{article_id}/
             art_dir = os.path.join(ARCHIVE_DIR, article_id)
             img_dir = os.path.join(art_dir, "images")
             os.makedirs(img_dir, exist_ok=True)
             
-            # BeautifulSoup을 통해 HTML 내부 이미지 추출 및 저장
+            # BeautifulSoup을 통해 HTML 내부 이미지 추출, 저장 및 원문 위치 치환
             soup = BeautifulSoup(raw_html, "lxml")
             imgs = soup.find_all("img")
             
@@ -961,38 +701,20 @@ class NewsCrawler:
                             with open(img_path, "wb") as f:
                                 f.write(response.content)
                                 
-                            # HTML 상의 src 주소를 로컬 주소(상대경로)로 변경
+                            # HTML 상의 src 주소를 로컬 경로로 변경
                             img["src"] = f"./images/{img_filename}"
                             img_counter += 1
                     except Exception as e:
                         # 이미지 개별 다운로드 실패는 전체 본문 수집 실패로 잡지 않고 무시
                         pass
             
-            # 로컬 경로로 수정된 HTML을 기반으로 Markdown 생성
+            # 로컬 경로로 치환된 깨끗한 HTML을 article.html로 단일 저장
             modified_html = str(soup)
-            markdown_content = f"# 기사 원문\n\n**출처 URL:** {url}\n\n"
-            
-            # HTML을 간단히 텍스트화 및 이미지 마크다운 구문 추가
-            # BeautifulSoup에서 텍스트와 이미지 태그를 순서대로 파싱하여 마크다운 파일 작성
-            for child in soup.children:
-                if child.name == "img" and child.get("src"):
-                    markdown_content += f"\n![기사 이미지]({child['src']})\n\n"
-                elif child.name in ["p", "div", "span"] or not child.name:
-                    text = child.get_text().strip()
-                    if text:
-                        markdown_content += f"{text}\n\n"
-                        
-            # 마크다운 저장
-            md_path = os.path.join(art_dir, "article.md")
-            with open(md_path, "w", encoding="utf-8") as f:
-                f.write(markdown_content)
-                
-            # HTML 원본도 보존 (더 원활한 UI 렌더링용)
             html_path = os.path.join(art_dir, "article.html")
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(f"<html><head><meta charset='UTF-8'></head><body>{modified_html}</body></html>")
                 
-            relative_archive_path = f"data/archive/{article_id}/article.md"
+            relative_archive_path = f"data/archive/{article_id}/article.html"
             
             return {
                 "raw_text": raw_text,
@@ -1005,38 +727,184 @@ class NewsCrawler:
 
     def _summarize_content(self, text: str) -> str:
         """기사 본문을 원본의 50% 미만으로 요약합니다. LLM 또는 무료 알고리즘 적용."""
-        use_llm = self.settings.news.use_llm_summary
-        api_key = self.settings.news.openai_api_key
+        # 실시간 최신 설정 반영
+        current_settings = load_settings()
+        use_llm = current_settings.news.use_llm_summary
+        llm_provider = getattr(current_settings.news, "llm_provider", "openai").lower()
         
+        api_key = ""
+        endpoint = ""
+        headers = {}
+        model = getattr(current_settings.news, "llm_model", "openrouter/free")
+        
+        if llm_provider == "openrouter":
+            api_key = (current_settings.news.openrouter_api_key or os.getenv("OPENROUTER_API_KEY") or "").strip()
+            endpoint = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "HTTP-Referer": "https://github.com/naver-cafe-auto-manager",
+                "X-Title": "Naver Cafe Auto Manager"
+            }
+            if model == "gpt-4o-mini":
+                model = "openrouter/free"
+        else:
+            api_key = (current_settings.news.openai_api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+            endpoint = "https://api.openai.com/v1/chat/completions"
+            
         if use_llm and api_key:
-            try:
-                # LLM API 동기 호출 (httpx로 요청)
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": "너는 e스포츠 전문 뉴스 요약봇이야. 제시된 뉴스 본문을 주요 내용 위주로 정리해줘. 단, 절대로 원문 길이의 45%를 넘기지 말아야 하고, 간결한 리포트 형식으로 3~5개 핵심 문단으로 정리해야 해. 출처 링크는 본문에 직접 넣지 마."},
-                        {"role": "user", "content": f"요약할 뉴스 기사 본문:\n{text}"}
-                    ],
-                    "temperature": 0.5
-                }
-                
-                with httpx.Client(timeout=30.0) as client:
-                    response = client.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
-                    if response.status_code == 200:
-                        res_data = response.json()
-                        summary_text = res_data["choices"][0]["message"]["content"].strip()
+            # 시도할 모델 체인 구성 (고성능 무료 모델 다중 배치)
+            models_to_try = []
+            if llm_provider == "openrouter":
+                fallback_models = [
+                    "openrouter/free",
+                    "meta-llama/llama-3.3-70b-instruct:free",
+                    "google/gemma-2-9b-it:free",
+                    "mistralai/mistral-7b-instruct:free",
+                    "qwen/qwen-2.5-72b-instruct:free"
+                ]
+                if model and model != "gpt-4o-mini" and model not in fallback_models:
+                    models_to_try.append(model)
+                models_to_try.extend(fallback_models)
+            else:
+                models_to_try = [model]
+
+            for current_model in models_to_try:
+                # 모델별 최대 3회 재시도 (Safety text 및 429 오류 대응)
+                for attempt in range(1, 4):
+                    try:
+                        # LLM API 동기 호출 (httpx로 요청)
+                        headers.update({
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        })
+                        payload = {
+                            "model": current_model,
+                            "messages": [
+                                {
+                                    "role": "system", 
+                                    "content": "너는 e스포츠 전문 뉴스 요약봇이야. 제시된 뉴스 기사 본문을 읽고, 첫 줄에는 반드시 '📌 기사 요약' 헤더를 붙이고 아래 예시와 동일한 불릿 포인트(-) 양식으로 3~4줄로 간결하게 핵심만 요약해줘.\n[엄격 수칙]\n1. 기사 본문이 영문(외국어)이더라도 반드시 매끄럽고 자연스러운 한국어(한글)로 번역하여 요약해.\n2. 선수, 코치, 감독의 닉네임/본명 및 대회명(EWC, LCK, MSI 등), 약어, 팀명은 문법이나 맞춤법에 맞지 않는 독특한 단어이더라도 원문 기사에 작성된 표기 철자 그대로 100% 동일하게 유지해야 해. 절대로 교정하거나 변형하지 마.\n3. 원문 기사에 없는 내용은 절대로 상상, 추측, 각색(Hallucination)하지 말고 오직 사실에만 기반하여 정확하게 작성해.\n4. 'User Safety:', 'Response Safety:' 같은 가드레일 메타 텍스트나 '**' 마크다운 문법 기호를 절대로 출력하지 마."
+                                },
+                                {
+                                    "role": "user", 
+                                    "content": "요약할 뉴스 기사 본문:\n[LCK] T1이 2024 LCK 서머 플레이오프 1라운드 경기에서 풀세트 접전 끝에 KT 롤스터를 3-2로 제압했습니다. 5세트 30분경 '페이커' 이상혁의 아지르가 결정적인 궁극기로 상대 딜러진을 배달하며 승기를 잡았습니다. 경기 후 김정균 감독은 \"선수들이 끝까지 집중력을 잃지 않고 최선을 다해줘서 고맙다\"며 2라운드 승리를 다짐했습니다."
+                                },
+                                {
+                                    "role": "assistant", 
+                                    "content": "📌 기사 요약\n- T1이 KT 롤스터와의 풀세트 접전 끝에 3대 2 승리를 거두며 플레이오프 2라운드 진출을 확정지었습니다.\n- 5세트 승부처에서 '페이커' 이상혁 선수의 아지르가 결정적인 한타 활약을 선보였습니다.\n- 김정균 감독은 경기 후 인터뷰에서 선수들의 끝까지 포기하지 않는 집중력을 칭찬하며 다음 경기 승리를 다짐했습니다."
+                                },
+                                {
+                                    "role": "user", 
+                                    "content": f"요약할 뉴스 기사 본문:\n{text}"
+                                }
+                            ],
+                            "temperature": 0.3
+                        }
                         
-                        # 분량이 50%를 초과하는지 자가 검증 후 초과 시 하향 폴백
-                        if len(summary_text) < len(text) * 0.5:
-                            return summary_text
-                            
-            except Exception as e:
-                log_event("NEWS_SCRAPING", "WARNING", f"OpenAI API 요약 실패 (무료 알고리즘으로 대체): {str(e)}")
+                        with httpx.Client(timeout=30.0) as client:
+                            response = client.post(endpoint, json=payload, headers=headers)
+                            if response.status_code == 200:
+                                res_data = response.json()
+                                summary_text = res_data["choices"][0]["message"]["content"].strip()
+                                
+                                # ** 마크다운 볼드 기호 전격 제거 정제
+                                summary_text = summary_text.replace("**", "").replace("*", "")
+                                
+                                # Safety 가드레일 메타데이터 문구만 포함된 엉터리 응답 검출 시 동일 모델 0.5초 대기 후 재시도
+                                if "user safety:" in summary_text.lower() or "response safety:" in summary_text.lower() or len(summary_text.strip()) < 30:
+                                    log_event("NEWS_SCRAPING", "WARNING", f"AI 요약 응답이 Safety 메타데이터에 불과함 (Model: {current_model}, 시도 {attempt}/3)")
+                                    time.sleep(0.5)
+                                    continue
+                                
+                                # AI 요약 결과가 비어있지 않고 원문보다 유효할 경우 성공 처리 및 반환
+                                if summary_text and len(summary_text) < len(text):
+                                    log_event("NEWS_SCRAPING", "INFO", f"AI 뉴스 요약 성공 (Provider: {llm_provider.upper()}, Model: {current_model})")
+                                    self.last_summary_method = f"{llm_provider.upper()}({current_model})"
+                                    return summary_text
+                            else:
+                                log_event("NEWS_SCRAPING", "WARNING", f"{llm_provider.upper()} API 요약 호출 실패 (Model: {current_model}, 시도 {attempt}/3, Status {response.status_code}): {response.text}")
+                                # 429 Rate Limit(호출 과도) 발생 시 1초 지연 후 동일 모델 재시도
+                                if response.status_code == 429:
+                                    time.sleep(1.0)
+                                    
+                    except Exception as e:
+                        log_event("NEWS_SCRAPING", "WARNING", f"{llm_provider.upper()} API 요약 실패 (Model: {current_model}, 시도 {attempt}/3): {str(e)}")
+                        time.sleep(0.5)
+            
+            # 루프가 완료되었음에도 요약 리턴이 안 된 경우 (모든 모델 시도 실패)
+            if llm_provider == "openrouter":
+                log_event("NEWS_SCRAPING", "WARNING", "OpenRouter의 모든 무료 AI 모델 요약에 실패했습니다. Gemini API 우회를 시도합니다.")
+            else:
+                log_event("NEWS_SCRAPING", "WARNING", "OpenAI API 요약에 실패했습니다. Gemini API 우회를 시도합니다.")
                 
+        # --- Gemini API Fallback 시도 ---
+        gemini_api_key = (current_settings.news.gemini_api_key or os.getenv("GEMINI_API_KEY") or "").strip()
+        if use_llm and gemini_api_key:
+            log_event("NEWS_SCRAPING", "INFO", "Gemini API를 통한 요약을 시도합니다.")
+            gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+            # 구글 AI Studio 실측 검증 완료 3종 경량 Flash/Flash-Lite 폴백 체인 (200 OK 실측 확보)
+            # 1순위: gemini-3.5-flash-lite (뉴스 요약 전용 초경량 초고속 모델 ⚡)
+            # 2순위: gemini-3.5-flash (3.5세대 고성능 Flash 모델)
+            # 3순위: gemini-2.5-flash-lite (2.5세대 백업 Flash-Lite 모델)
+            gemini_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash-lite"]
+            gemini_headers = {
+                "Authorization": f"Bearer {gemini_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            for g_model in gemini_models:
+                for attempt in range(1, 4):
+                    try:
+                        payload = {
+                            "model": g_model,
+                            "messages": [
+                                {
+                                    "role": "system", 
+                                    "content": "너는 e스포츠 전문 뉴스 요약봇이야. 제시된 뉴스 기사 본문을 읽고, 첫 줄에는 반드시 '📌 기사 요약' 헤더를 붙이고 아래 예시와 동일한 불릿 포인트(-) 양식으로 3~4줄로 간결하게 핵심만 요약해줘.\n[엄격 수칙]\n1. 기사 본문이 영문(외국어)이더라도 반드시 매끄럽고 자연스러운 한국어(한글)로 번역하여 요약해.\n2. 선수, 코치, 감독의 닉네임/본명 및 대회명(EWC, LCK, MSI 등), 약어, 팀명은 문법이나 맞춤법에 맞지 않는 독특한 단어이더라도 원문 기사에 작성된 표기 철자 그대로 100% 동일하게 유지해야 해. 절대로 교정하거나 변형하지 마.\n3. 원문 기사에 없는 내용은 절대로 상상, 추측, 각색(Hallucination)하지 말고 오직 사실에만 기반하여 정확하게 작성해.\n4. 'User Safety:', 'Response Safety:' 같은 가드레일 메타 텍스트나 '**' 마크다운 문법 기호를 절대로 출력하지 마."
+                                },
+                                {
+                                    "role": "user", 
+                                    "content": "요약할 뉴스 기사 본문:\n[LCK] T1이 2024 LCK 서머 플레이오프 1라운드 경기에서 풀세트 접전 끝에 KT 롤스터를 3-2로 제압했습니다. 5세트 30분경 '페이커' 이상혁의 아지르가 결정적인 궁극기로 상대 딜러진을 배달하며 승기를 잡았습니다. 경기 후 김정균 감독은 \"선수들이 끝까지 집중력을 잃지 않고 최선을 다해줘서 고맙다\"며 2라운드 승리를 다짐했습니다."
+                                },
+                                {
+                                    "role": "assistant", 
+                                    "content": "📌 기사 요약\n- T1이 KT 롤스터와의 풀세트 접전 끝에 3대 2 승리를 거두며 플레이오프 2라운드 진출을 확정지었습니다.\n- 5세트 승부처에서 '페이커' 이상혁 선수의 아지르가 결정적인 한타 활약을 선보였습니다.\n- 김정균 감독은 경기 후 인터뷰에서 선수들의 끝까지 포기하지 않는 집중력을 칭찬하며 다음 경기 승리를 다짐했습니다."
+                                },
+                                {
+                                    "role": "user", 
+                                    "content": f"요약할 뉴스 기사 본문:\n{text}"
+                                }
+                            ],
+                            "temperature": 0.3
+                        }
+                        
+                        with httpx.Client(timeout=30.0) as client:
+                            response = client.post(gemini_endpoint, json=payload, headers=gemini_headers)
+                            if response.status_code == 200:
+                                res_data = response.json()
+                                summary_text = res_data["choices"][0]["message"]["content"].strip()
+                                summary_text = summary_text.replace("**", "").replace("*", "")
+                                
+                                if "user safety:" in summary_text.lower() or "response safety:" in summary_text.lower() or len(summary_text.strip()) < 30:
+                                    log_event("NEWS_SCRAPING", "WARNING", f"Gemini 요약 응답이 Safety 메타데이터에 불과함 (Model: {g_model}, 시도 {attempt}/3)")
+                                    time.sleep(0.5)
+                                    continue
+                                    
+                                if summary_text and len(summary_text) < len(text):
+                                    log_event("NEWS_SCRAPING", "INFO", f"Gemini 뉴스 요약 성공 (Model: {g_model})")
+                                    self.last_summary_method = f"Gemini({g_model})"
+                                    return summary_text
+                            else:
+                                log_event("NEWS_SCRAPING", "WARNING", f"Gemini API 요약 호출 실패 (Model: {g_model}, 시도 {attempt}/3, Status {response.status_code}): {response.text}")
+                                if response.status_code == 429:
+                                    time.sleep(1.0)
+                                    
+                    except Exception as e:
+                        log_event("NEWS_SCRAPING", "WARNING", f"Gemini API 요약 실패 (Model: {g_model}, 시도 {attempt}/3): {str(e)}")
+                        time.sleep(0.5)
+            
+            log_event("NEWS_SCRAPING", "WARNING", "Gemini API의 모든 무료 모델 요약에 실패했습니다. 로컬 요약 알고리즘으로 대체 구동합니다.")
+        elif use_llm:
+            log_event("NEWS_SCRAPING", "WARNING", "모든 LLM 요약 시도에 실패했습니다. 로컬 요약 알고리즘으로 대체 구동합니다.")
+
         # --- 무료 알고리즘 방식 ---
         # 1. 줄 바꿈 및 마침표 기준으로 문장 추출
         # 기사의 앞부분 및 핵심 정보가 많은 상위 30% 문장을 추출하여 자연스럽게 조합
@@ -1069,4 +937,5 @@ class NewsCrawler:
         if len(summary_result) < len(text):
             summary_result += "\n\n..."
             
+        self.last_summary_method = "로컬 폴백"
         return summary_result

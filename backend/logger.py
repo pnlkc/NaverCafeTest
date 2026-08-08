@@ -3,6 +3,25 @@ import logging
 from logging.handlers import RotatingFileHandler
 from backend.database import log_action
 
+# 일반 사용자 친화적 한글 카테고리 매핑
+ACTION_LABEL_MAP = {
+    "JOIN_APPROVE": "👥 카페 가입 승인",
+    "LEVEL_UP": "⭐ 회원 조건 등업",
+    "NEWS_SCRAPING": "📰 뉴스 기사 수집",
+    "NEWS_PUBLISH": "🚀 뉴스 자동 발행",
+    "BOARD_MONITOR": "🔔 게시판 실시간 감시",
+    "SCHEDULER": "⚙️ 자동 스케줄러",
+    "SYSTEM": "🖥️ 시스템 제어"
+}
+
+STATUS_LABEL_MAP = {
+    "SUCCESS": "성공",
+    "INFO": "안내",
+    "WARNING": "주의",
+    "FAILED": "오류",
+    "ERROR": "오류"
+}
+
 # 로그 저장 경로 설정
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 if not os.path.exists(LOG_DIR):
@@ -16,9 +35,9 @@ logger.setLevel(logging.INFO)
 
 # 이미 핸들러가 설정되어 있다면 중복 방지
 if not logger.handlers:
-    # 포맷 지정
+    # 사용자 친화적 깔끔한 날짜-시간 포맷
     formatter = logging.Formatter(
-        "[%(asctime)s] %(levelname)s [%(filename)s:%(lineno)d] - %(message)s",
+        "[%(asctime)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
@@ -41,9 +60,13 @@ if not logger.handlers:
 
 def log_event(action_type: str, status: str, message: str) -> None:
     """
-    텍스트 로그 파일과 SQLite 데이터베이스에 이벤트를 동시에 기록합니다.
+    일반인 사용자가 보기 쉬운 한글 포맷으로 텍스트 로그 파일과 DB에 기록합니다.
     """
-    log_msg = f"[{action_type}] [{status}] {message}"
+    category_label = ACTION_LABEL_MAP.get(action_type, f"📌 {action_type}")
+    status_label = STATUS_LABEL_MAP.get(status, status)
+    
+    log_msg = f"[{status_label}] {category_label} | {message}"
+    
     if status in ["SUCCESS", "INFO"]:
         logger.info(log_msg)
     elif status == "WARNING":
@@ -54,10 +77,3 @@ def log_event(action_type: str, status: str, message: str) -> None:
     # DB 로그 기록
     log_action(action_type, status, message)
 
-    # 디스코드 작업 로그 채널 실시간 알림 전송 (단, 알림 자체 로그 및 루프성 로그 제외)
-    if action_type not in ["DISCORD_NOTIFY", "SYSTEM", "BOARD_MONITOR"]:
-        try:
-            from backend.discord_notifier import notify_action_log
-            notify_action_log(action_type, status, message)
-        except Exception:
-            pass

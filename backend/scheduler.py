@@ -1,7 +1,7 @@
 import asyncio
 import time
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
@@ -25,6 +25,49 @@ class BackgroundScheduler:
         # 중복 알림 방지용 캐시 (게시글 ID 보관)
         self.seen_articles = set()
         
+        # 작업별 마지막 및 다음 실행 예상 시각 트래킹
+        self.last_run_times = {
+            "join_approve": time.time(),
+            "level_up": time.time(),
+            "board_monitor": time.time(),
+            "news_publish": time.time()
+        }
+
+    def get_scheduler_status(self) -> dict:
+        """각 자동 스케줄러 작업의 다음 실행 예정 시간 및 남은 시간(초)을 반환합니다."""
+        settings = load_settings()
+        now = time.time()
+        
+        intervals = {
+            "join_approve": settings.intervals.join_approve,
+            "level_up": settings.intervals.level_up,
+            "board_monitor": settings.intervals.report_alert,
+            "news_publish": settings.intervals.news_publish
+        }
+        
+        task_info = {}
+        for task_name, interval in intervals.items():
+            last_run = self.last_run_times.get(task_name, now)
+            next_run_ts = last_run + interval
+            remaining_sec = max(0, int(next_run_ts - now))
+            next_run_str = datetime.fromtimestamp(next_run_ts).strftime("%H:%M:%S")
+            
+            t_obj = self.tasks.get(task_name)
+            is_active = self.is_running and (t_obj is not None) and (not t_obj.done())
+            
+            task_info[task_name] = {
+                "is_active": is_active,
+                "interval_seconds": interval,
+                "remaining_seconds": remaining_sec,
+                "next_run_time": next_run_str
+            }
+            
+        return {
+            "is_running": self.is_running,
+            "tasks": task_info
+        }
+
+
     async def start(self):
         """스케줄러의 모든 주기 태스크를 백그라운드에서 실행합니다."""
         if self.is_running:
@@ -33,11 +76,34 @@ class BackgroundScheduler:
         self.is_running = True
         log_event("SCHEDULER", "INFO", "백그라운드 스케줄러 엔진을 가동합니다.")
         
+        # 기존 DB에 저장된 게시판 알림(BoardAlert) 이력 수집하여 seen_articles 중복 웜업 세트에 등록
+        try:
+            from backend.database import SessionLocal, BoardAlert
+            db = SessionLocal()
+            alerts = db.query(BoardAlert).all()
+            for a in alerts:
+                if a.article_id:
+                    self.seen_articles.add(f"{a.board_type}_{a.article_id}")
+                if a.title:
+                    self.seen_articles.add(f"{a.board_type}_{a.title.strip()}")
+            db.close()
+            log_event("SCHEDULER", "INFO", f"기존 게시판 알림 {len(alerts)}건 중복 수집 웜업 로드 완료.")
+        except Exception as e:
+            log_event("SCHEDULER", "WARNING", f"게시판 알림 DB 웜업 중 예외 발생: {str(e)}")
+
+        # 기동 시점 타임스탬프 재설정
+        now = time.time()
+        for k in self.last_run_times:
+            self.last_run_times[k] = now
+            
         # 각 태스크 비동기 기동
         self.tasks["join_approve"] = asyncio.create_task(self._loop_join_approve())
         self.tasks["level_up"] = asyncio.create_task(self._loop_level_up())
         self.tasks["news_publish"] = asyncio.create_task(self._loop_news_publish())
         self.tasks["board_monitor"] = asyncio.create_task(self._loop_board_monitor())
+        self.tasks["db_cleanup"] = asyncio.create_task(self._loop_db_cleanup())
+
+
 
     async def stop(self):
         """실행 중인 모든 백그라운드 태스크를 취소하고 정지합니다."""
@@ -52,8 +118,10 @@ class BackgroundScheduler:
         """카페 가입 자동 승인 루프"""
         from backend.discord_notifier import notify_action_log
         while self.is_running:
+            self.last_run_times["join_approve"] = time.time()
             settings = load_settings()
             interval = settings.intervals.join_approve
+
             
             try:
                 status = await self.bot.get_session_status()
@@ -77,8 +145,10 @@ class BackgroundScheduler:
         """회원 등업 조건 자동 검증 루프"""
         from backend.discord_notifier import notify_action_log
         while self.is_running:
+            self.last_run_times["level_up"] = time.time()
             settings = load_settings()
             interval = settings.intervals.level_up
+
             
             try:
                 status = await self.bot.get_session_status()
@@ -104,8 +174,10 @@ class BackgroundScheduler:
         last_publish_day = None
         
         while self.is_running:
+            self.last_run_times["news_publish"] = time.time()
             settings = load_settings()
             interval = settings.intervals.news_publish
+
             
             try:
                 status = await self.bot.get_session_status()
@@ -113,11 +185,23 @@ class BackgroundScheduler:
                 
                 if status["logged_in"] and (last_publish_day != current_day):
                     res = await self.crawler.collect_and_process_news()
-                    if res > 0:
-                        last_publish_day = current_day
-                        msg = f"오늘의 뉴스 {res}개 배포 처리를 마쳤습니다."
-                        log_event("NEWS_PUBLISH", "SUCCESS", msg)
-                        notify_action_log("NEWS_PUBLISH", "SUCCESS", msg)
+                    if isinstance(res, dict):
+                        total = res.get("total", 0)
+                        if total > 0:
+                            last_publish_day = current_day
+                            success = res.get("success", 0)
+                            failed = res.get("failed", 0)
+                            details = res.get("details", [])
+                            msg = f"오늘의 뉴스 배포 처리를 마쳤습니다.\n- 총 발행 대상: {total}개\n- 성공: {success}개 / 실패: {failed}개\n\n📌 **상세 발행 목록:**\n" + "\n".join(details)
+                            log_event("NEWS_PUBLISH", "SUCCESS", f"오늘의 뉴스 {success}/{total}개 발행 완료 (실패: {failed}개)")
+                            notify_action_log("NEWS_PUBLISH", "SUCCESS", msg)
+                    else:
+                        # 호환성을 위한 구버전 정수 리턴 처리
+                        if res > 0:
+                            last_publish_day = current_day
+                            msg = f"오늘의 뉴스 {res}개 배포 처리를 마쳤습니다."
+                            log_event("NEWS_PUBLISH", "SUCCESS", msg)
+                            notify_action_log("NEWS_PUBLISH", "SUCCESS", msg)
                 elif not status["logged_in"]:
                     log_event("NEWS_PUBLISH", "WARNING", "로그인 세션이 없어 뉴스 게시를 건너뜁니다.")
             except asyncio.CancelledError:
@@ -329,7 +413,6 @@ class BackgroundScheduler:
                 # 작성 시간 파싱 (당일: "10:48" → "2026.07.20 10:48", 이전: "26.07.19." → "2026.07.19")
                 raw_time = art.get("postedAt", "")
                 if re.match(r"^\d{1,2}:\d{2}$", raw_time):
-                    from datetime import datetime, timezone, timedelta
                     kst = timezone(timedelta(hours=9))
                     today_str = datetime.now(kst).strftime("%Y.%m.%d")
                     posted_at = f"{today_str} {raw_time}"
@@ -339,29 +422,101 @@ class BackgroundScheduler:
                 else:
                     posted_at = raw_time or "알 수 없음"
                 
-                pc_article_link = get_pc_article_url(club_id, article_id)
+                pc_article_link = f"https://cafe.naver.com/{club_id}/{article_id}"
+                title_key = f"{board_type}_{title.strip()}"
                 
-                if article_key not in self.seen_articles:
+                # 1차: 인메모리 seen_articles (게시글 고유 ID 또는 제목 매칭 시 스킵)
+                if article_key in self.seen_articles or title_key in self.seen_articles:
+                    continue
+                    
+                # 2차: SQLite DB (BoardAlert 테이블) 교차 확인
+                db_already_exists = False
+                try:
+                    from backend.database import SessionLocal, BoardAlert
+                    db = SessionLocal()
+                    db_exists = db.query(BoardAlert).filter(
+                        BoardAlert.board_type == board_type,
+                        (BoardAlert.article_id == article_id) | (BoardAlert.title == title.strip())
+                    ).first()
+                    db.close()
+                    if db_exists:
+                        db_already_exists = True
+                except Exception:
+                    pass
+
+                if db_already_exists:
                     self.seen_articles.add(article_key)
-                    new_articles_to_notify.append({
-                        "title": title,
-                        "author": author,
-                        "link": pc_article_link,
-                        "posted_at": posted_at
-                    })
+                    self.seen_articles.add(title_key)
+                    continue
+
+                # 중복이 아닌 신규 게시글만 탐지 및 캐시 등록
+                self.seen_articles.add(article_key)
+                self.seen_articles.add(title_key)
+                new_articles_to_notify.append({
+                    "article_id": article_id,
+                    "title": title,
+                    "author": author,
+                    "link": pc_article_link,
+                    "posted_at": posted_at
+                })
             
-            # 새로 발견된 미발송 게시물 전체에 대해 디스코드 알림 발송
+            # 새로 발견된 미발송 게시물 전체에 대해 디스코드 알림 발송 및 DB 기록
             for art in new_articles_to_notify:
+                res = False
+                
                 if board_type == "REPORT":
                     res = notify_report(art["title"], art["author"], art["link"], art["posted_at"])
-                    log_event("REPORT_ALERT", "SUCCESS" if res else "FAILED", f"신고글 탐지 디스코드 발송 ({res}): {art['title']} [작성자: {art['author']}] [작성시간: {art['posted_at']}]")
+                    log_event("REPORT_ALERT", "SUCCESS" if res else "FAILED", f"신고글 탐지 디스코드 발송 ({'성공' if res else '실패'}): {art['title']} [작성자: {art['author']}] [작성시간: {art['posted_at']}]")
                 elif board_type == "SUGGESTION":
                     res = notify_suggestion(art["title"], art["author"], art["link"], art["posted_at"])
-                    log_event("SUGGESTION_ALERT", "SUCCESS" if res else "FAILED", f"건의글 탐지 디스코드 발송 ({res}): {art['title']} [작성자: {art['author']}] [작성시간: {art['posted_at']}]")
+                    log_event("SUGGESTION_ALERT", "SUCCESS" if res else "FAILED", f"건의글 탐지 디스코드 발송 ({'성공' if res else '실패'}): {art['title']} [작성자: {art['author']}] [작성시간: {art['posted_at']}]")
+
+                # 디스코드 알림 전송이 실제로 완료되었을 때만 DB BoardAlert 적재 (카운트 동기화)
+                if res:
+                    try:
+                        from backend.database import SessionLocal, BoardAlert
+                        db = SessionLocal()
+                        new_alert = BoardAlert(
+                            board_type=board_type,
+                            article_id=art["article_id"],
+                            title=art["title"],
+                            writer=art["author"],
+                            written_at=art["posted_at"],
+                            article_url=art["link"],
+                            checked_at=datetime.now()
+                        )
+                        db.add(new_alert)
+                        db.commit()
+                        db.close()
+                    except Exception as db_err:
+                        log_event("BOARD_MONITOR", "WARNING", f"BoardAlert DB 기록 실패: {str(db_err)}")
+                else:
+                    # 알림 실패 시 스캔 캐시에서 제거하여 다음 스케줄러 턴에서 다시 알림을 재시도
+                    art_key = f"{board_type}_{art['article_id']}"
+                    tit_key = f"{board_type}_{art['title'].strip()}"
+                    self.seen_articles.discard(art_key)
+                    self.seen_articles.discard(tit_key)
+
 
             log_event("BOARD_MONITOR", "INFO", f"[{board_type}] 게시판 글 {found_count}개 감지 및 디스코드 모니터링 완료.")
         except Exception as e:
             log_event("BOARD_MONITOR", "ERROR", f"[{board_type}] 게시판 감시 중 예외 발생: {str(e)}")
+
+    async def _loop_db_cleanup(self):
+        """오래된 DB 로그 자동 정리 루프 (24시간 주기 실행)"""
+        from backend.database import cleanup_old_logs
+        while self.is_running:
+            try:
+                deleted = cleanup_old_logs(days=30)
+                if deleted > 0:
+                    log_event("DB_CLEANUP", "INFO", f"30일 경과 오래된 데이터 {deleted}건을 자동 정리했습니다.")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log_event("DB_CLEANUP", "ERROR", f"오래된 로그 정리 루프 중 에러 발생: {str(e)}")
+            
+            # 24시간 (86400초) 대기
+            await asyncio.sleep(86400)
 
 # 전역 스케줄러 인스턴스
 global_scheduler = BackgroundScheduler()

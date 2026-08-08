@@ -1,7 +1,7 @@
 {
     "cafe": {
         "club_id": "31759124",
-        "naver_id": ""
+        "cafe_url": "https://cafe.naver.com/esportsnplus"
     },
     "intervals": {
         "join_approve": 60,
@@ -40,17 +40,21 @@
             "다짐",
             "포부"
         ],
-        "use_llm_summary": false,
+        "use_llm_summary": true,
+        "llm_provider": "gemini",
+        "llm_model": "gemini-3.5-flash-lite",
         "openai_api_key": "",
+        "openrouter_api_key": "",
+        "gemini_api_key": "",
         "publish_board_id": "4"
     },
     "discord": {
-        "webhook_url": "https://discord.com/api/webhooks/1528279028568555621/Uw4JH69edHCqb8GHfDeUMaSn-mbBNAh7fhth1d0bzzF-bqxZVIYltmyJEL6UNjOpkd3U",
+        "webhook_url": "",
         "report_webhook_url": "",
         "suggestion_webhook_url": "",
         "log_webhook_url": "",
         "report_board_name": "신고 게시판",
-        "suggestion_board_name": "건의 게시판",
+        "suggestion_board_name": "자유 게시판",
         "report_board_id": "3",
         "suggestion_board_id": "5"
     }
