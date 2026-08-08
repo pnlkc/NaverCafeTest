@@ -1,5 +1,12 @@
 # 변경 이력 (Changelog)
 
+## [1.1.75/2026-08-08] - [주체: 👔 Project Manager]
+- **작업 내용:**
+  - **.env.example 템플릿 주석 오타 수정 ([.env.example](file:///c:/Users/pnlkc/AIProject/NaverCafe/.env.example#L1))**:
+    - 파일 첫 줄의 잘못 포함된 한글 글자 `ㄷ#`을 `#`로 수정 및 정리.
+- **사유:** 사용자의 `.env.example` 커밋 지시 반영.
+- **검증 결과:** `verify.js` 자가 검증 완료.
+
 ## [1.1.74/2026-07-22] - [주체: ⚙️ Backend Developer]
 - **작업 내용:**
   - **뉴스 요약 전용 경량 Flash-Lite 모델 파이프라인 최적화 ([backend/news_crawler.py](file:///c:/Users/pnlkc/AIProject/NaverCafe/backend/news_crawler.py#L843), [backend/config.py](file:///c:/Users/pnlkc/AIProject/NaverCafe/backend/config.py#L44), [data/config.json](file:///c:/Users/pnlkc/AIProject/NaverCafe/data/config.json#L44))**:
