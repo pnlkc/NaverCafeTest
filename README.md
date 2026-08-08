@@ -30,6 +30,8 @@ NaverCafe/
 ├── watchdog.py               # 서버 프로세스 감시 및 자동 재기동 래퍼
 ├── run.bat                   # 윈도우(Windows) 전용 원클릭 실행 스크립트
 ├── run.sh                    # 맥(macOS / Linux) 전용 실행 스크립트
+├── clean_data.bat            # 윈도우 전용 데이터 초기화/정제 스크립트
+├── clean_data.sh             # 맥 전용 데이터 초기화/정제 스크립트
 ├── requirements.txt          # 파이썬 의존성 패키지 목록
 ├── .env.example              # 환경변수 설정 템플릿 파일
 └── README.md                 # 프로젝트 문서
@@ -112,6 +114,22 @@ NaverCafe/
 * **🖥️ 웹 대시보드 UI**: [http://localhost:5173](http://localhost:5173) (또는 `http://localhost:5173/#dashboard`)
 * **📑 백엔드 API 문서**: [http://localhost:8000/docs](http://localhost:8000/docs) (Swagger UI)
   *(※ 8000번 포트는 백엔드 API 전용 서버로, UI 접속은 5173 포트를 이용하시면 됩니다)*
+
+---
+
+## 🧹 데이터 초기화 및 정제 방법
+
+수집된 뉴스 아카이브, 회원 처리 이력 및 게시판 모니터링 로그 데이터를 초기화하려면 아래 스크립트를 사용합니다.
+
+* **🪟 Windows (윈도우)**: `clean_data.bat` 더블 클릭 또는 실행
+  ```cmd
+  clean_data.bat
+  ```
+* **🍎 macOS (맥)**: 권한 부여 후 `clean_data.sh` 실행
+  ```bash
+  chmod +x clean_data.sh
+  ./clean_data.sh
+  ```
 
 ---
 
