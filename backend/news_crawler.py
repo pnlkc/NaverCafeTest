@@ -405,6 +405,9 @@ class NewsCrawler:
                 db_pre = SessionLocal()
                 new_candidate_articles = []
                 try:
+                    for art in articles:
+                        art_identifier = art.get("url") or art.get("id") or art["title"]
+                        archive_folder = os.path.join(ARCHIVE_DIR, art["id"])
                         clean_target_title = bot.clean_title_for_naver(art["title"])
                         core_target = re.sub(r"[^\w가-힣a-zA-Z0-9]", "", clean_target_title)[:15]
                         
