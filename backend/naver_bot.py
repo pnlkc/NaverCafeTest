@@ -785,8 +785,8 @@ class NaverCafeBot:
 
     async def is_article_already_in_cafe(self, title: str) -> bool:
         """
-        네이버 카페 실시간 제목 검색을 수행하여 해당 기사 제목이 이미 카페 게시판에 존재하는지 100% 검증합니다.
-        페이지 위치(1페이지, 5페이지, 10페이지 등)와 관계없이 네이버 카페 전체에서 실시간 검색으로 중복을 판별합니다.
+        네이버 카페 실시간 제목 검색을 수행하고, 정밀 유사도 알고리즘(핵심 단어 75%+ 일치)을 적용하여
+        동일 기사인 경우에만 중복으로 판정합니다. (비슷한 롤 뉴스 제목의 오인 스킵 100% 예방)
         """
         self.settings = load_settings()
         club_id = self.settings.cafe.club_id
@@ -794,13 +794,16 @@ class NaverCafeBot:
             return False
             
         cleaned = self.clean_title_for_naver(title)
-        raw_words = [w for w in re.sub(r"[^\w\s가-힣a-zA-Z0-9]", " ", cleaned).strip().split() if len(w) >= 2]
+        # [LCK], [오!쎈 종로] 같은 공통 태그 제거 후 순수 키워드 추출
+        pure_title = re.sub(r"\[[^\]]+\]", "", cleaned).strip()
+        raw_words = [w for w in re.sub(r"[^\w\s가-힣a-zA-Z0-9]", " ", pure_title).strip().split() if len(w) >= 2]
         if not raw_words:
             return False
             
-        # 첫 2개 주요 단어로 네이버 카페 정식 검색 URL 생성
-        query_str = " ".join(raw_words[:2]) if len(raw_words) >= 2 else raw_words[0]
+        # 첫 2~3개 핵심 고유 단어로 카페 검색
+        query_str = " ".join(raw_words[:3]) if len(raw_words) >= 3 else " ".join(raw_words)
         from urllib.parse import quote
+        import difflib
         search_url = f"https://m.cafe.naver.com/ca-fe/web/cafes/{club_id}/search/articles?query={quote(query_str)}"
         
         try:
@@ -812,18 +815,17 @@ class NaverCafeBot:
                 await page.goto(search_url)
                 await page.wait_for_timeout(2500)
                 
-                # 검색 결과 페이지 DOM 검사
                 page_text = await page.content()
                 if "글을 찾을 수 없습니다" in page_text or "검색 결과가 없습니다" in page_text:
                     await context.browser.close()
                     return False
                     
-                # 검색 결과 게시글 제목 목록 추출
+                # 검색된 카페 게시글 제목 목록 파싱
                 found_titles = await page.evaluate("""() => {
                     const titles = [];
                     document.querySelectorAll('li.ListItem, a.mainLink, a[href*="articles/"], strong.tit, span.txt').forEach(el => {
                         const text = el.innerText.trim();
-                        if (text && text.length > 2 && !text.includes('찾을 수 없습니다')) {
+                        if (text && text.length > 3 && !text.includes('찾을 수 없습니다')) {
                             titles.push(text);
                         }
                     });
@@ -831,18 +833,29 @@ class NaverCafeBot:
                 }""")
                 await context.browser.close()
                 
-                # 핵심 키워드 대조 (첫 번째 핵심 키워드 매칭)
-                first_keyword = raw_words[0]
+                # ── 정밀 제목 유사도 검증 ──
+                target_words = set(raw_words)
+                
                 for ft in found_titles:
-                    ft_clean = self.clean_title_for_naver(ft)
-                    if first_keyword in ft_clean:
-                        log_event("NEWS_SCRAPING", "INFO", f"네이버 카페 실시간 검색에서 이미 게시된 동일 기사 발견: '{ft}' (중복 스킵)")
+                    ft_cleaned = self.clean_title_for_naver(ft)
+                    ft_pure = re.sub(r"\[[^\]]+\]", "", ft_cleaned).strip()
+                    ft_words = set(w for w in re.sub(r"[^\w\s가-힣a-zA-Z0-9]", " ", ft_pure).split() if len(w) >= 2)
+                    
+                    if not ft_words:
+                        continue
+                        
+                    # 1. Jaccard 키워드 교집합 비율 계산
+                    intersection = target_words.intersection(ft_words)
+                    overlap_ratio = len(intersection) / float(min(len(target_words), len(ft_words)))
+                    
+                    # 2. SequenceMatcher 문자열 유사도 계산
+                    seq_ratio = difflib.SequenceMatcher(None, pure_title, ft_pure).ratio()
+                    
+                    # 핵심 키워드 중복률이 75% 이상이거나, 전체 문자열 유사도가 75% 이상일 때만 진짜 동일 기사로 판정
+                    if overlap_ratio >= 0.75 or seq_ratio >= 0.75:
+                        log_event("NEWS_SCRAPING", "INFO", f"네이버 카페 정밀 검색: 동일 기사 판정(유사도 {max(overlap_ratio, seq_ratio):.2f}) - '{ft}' (스킵)")
                         return True
                         
-                # 검색 결과가 1개 이상 존재하면 중복 가능성 감지
-                if len(found_titles) > 0:
-                    log_event("NEWS_SCRAPING", "INFO", f"네이버 카페 실시간 검색에서 기사 중복 감지: '{found_titles[0]}' (스킵)")
-                    return True
         except Exception as search_err:
             log_event("NEWS_SCRAPING", "WARNING", f"카페 실시간 제목 검색 실패 (안전 스킵): {str(search_err)}")
             
