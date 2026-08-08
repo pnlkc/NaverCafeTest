@@ -516,8 +516,8 @@ class NewsCrawler:
                         log_event("NEWS_SCRAPING", "FAILED", f"기사 발행 실패: {art['title']}, 사유: {post_res.get('message')}")
                         details.append(f"❌ {art['title']} (사유: {post_res.get('message')}) [{self.last_summary_method}]")
                         
-                    # 카페 글쓰기 사이의 랜덤 지연 (봇 방지)
-                    await page.wait_for_timeout(3000)
+                    # 카페 연속 글쓰기 사이의 미세 딜레이 및 봇 방지 (6초 대기)
+                    await page.wait_for_timeout(6000)
                     
                 db.close()
                 await browser.close()

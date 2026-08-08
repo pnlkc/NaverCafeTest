@@ -663,10 +663,14 @@ class NaverCafeBot:
                     # 확실하게 엘리먼트가 준비될 때까지 대기 후 클릭
                     await submit_btn.scroll_into_view_if_needed()
                     await submit_btn.click(force=True)
-                    await page.wait_for_timeout(4000)
+                    # 네이버 카페 서버의 최종 게시글 저장 완료 처리 대기 (6초)
+                    await page.wait_for_timeout(6000)
                     
                     # 실시간 클릭 직후 상태 스크린샷 저장 (오류 및 팝업 파악용)
-                    await page.screenshot(path="data/submit_check.png")
+                    try:
+                        await page.screenshot(path="data/submit_check.png")
+                    except Exception:
+                        pass
                     
                     # ── 1단계: 리다이렉션 감지 (다중 방어) ──
                     # 네이버 카페 SPA 특성상 JS 내부 라우팅으로 URL이 바뀔 수 있어 여러 전략을 순차 적용
