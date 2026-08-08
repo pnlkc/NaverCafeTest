@@ -461,6 +461,9 @@ class BackgroundScheduler:
                 })
             
             # 새로 발견된 미발송 게시물 전체에 대해 디스코드 알림 발송 및 DB 기록
+            # (사용자가 시간 순서대로 읽을 수 있도록 오래된 글부터 최신 글 순으로 역순 정렬 발송)
+            new_articles_to_notify.reverse()
+            
             for art in new_articles_to_notify:
                 res = False
                 
