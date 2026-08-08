@@ -11,16 +11,10 @@ from backend.database import init_db, SessionLocal, ActionLog, NewsArchive, log_
 from backend.naver_bot import NaverCafeBot
 from backend.news_crawler import NewsCrawler
 
-# 테스트 전 DB 초기화 픽스처
+# 테스트 전 DB 준비 픽스처 (운영 DB 데이터 보존)
 @pytest.fixture(autouse=True)
 def setup_database():
     init_db()
-    # 테스트 전 기존 로그 비우기
-    db = SessionLocal()
-    db.query(ActionLog).delete()
-    db.query(NewsArchive).delete()
-    db.commit()
-    db.close()
     yield
 
 def test_settings_load_save(monkeypatch):
