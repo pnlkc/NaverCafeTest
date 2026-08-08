@@ -422,7 +422,7 @@ class BackgroundScheduler:
                 else:
                     posted_at = raw_time or "알 수 없음"
                 
-                pc_article_link = f"https://cafe.naver.com/{club_id}/{article_id}"
+                pc_article_link = get_pc_article_url(club_id, article_id, menu_id)
                 title_key = f"{board_type}_{title.strip()}"
                 
                 # 1차: 인메모리 seen_articles (게시글 고유 ID 또는 제목 매칭 시 스킵)
