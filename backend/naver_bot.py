@@ -687,14 +687,11 @@ class NaverCafeBot:
                     except Exception:
                         pass
                     
-                    # 1-B) wait_for_url 실패 시 현재 URL 직접 검사 (SPA 전환 누락 보완)
+                    # 1-B) wait_for_url 실패 시 현재 URL 직접 검사 (실제 글 상세 URL 패턴에 명시적 매칭될 때만 인정)
                     if not success_published:
                         await page.wait_for_timeout(2000)
                         final_url = page.url
                         if any(kw in final_url for kw in ["ArticleRead", "articles/", "articleid="]):
-                            success_published = True
-                        elif "write" not in final_url:
-                            # write 페이지를 벗어났다면 등록 성공으로 추정
                             success_published = True
                     
                     # 성공 시 글 ID 추출 시도
