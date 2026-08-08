@@ -39,7 +39,15 @@ const API_BASE = window.location.hostname === 'localhost' ? 'http://localhost:80
 
 function App() {
 
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const getInitialTab = () => {
+    const hash = window.location.hash.replace('#', '');
+    if (['dashboard', 'members', 'alerts', 'archives', 'logs', 'settings'].includes(hash)) {
+      return hash;
+    }
+    return 'dashboard';
+  };
+
+  const [activeTab, setActiveTab] = useState(getInitialTab);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [settings, setSettings] = useState(null);
   const [sessionStatus, setSessionStatus] = useState({ logged_in: false, message: '연동 상태 확인 중...' });
