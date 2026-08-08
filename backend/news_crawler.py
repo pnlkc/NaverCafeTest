@@ -439,6 +439,16 @@ class NewsCrawler:
 
                 log_event("NEWS_SCRAPING", "INFO", f"중복 기사를 제외한 {len(new_candidate_articles)}개의 신규 기사 후보를 검토합니다.")
                 
+                if not new_candidate_articles:
+                    log_event("NEWS_SCRAPING", "INFO", "모든 기사가 이미 DB/카페에 수집 완료되어 추가 발행할 신규 기사가 없습니다.")
+                    await browser.close()
+                    return {
+                        "total": 0,
+                        "success": 0,
+                        "failed": 0,
+                        "details": []
+                    }
+                
                 # 2. 필터링 로직 적용 (팀별 균등 분배 + 인터뷰 우선순위)
                 limit_cnt = getattr(self.settings.news, "max_articles_per_run", 10) or 10
                 filtered_articles = self._filter_articles(new_candidate_articles, limit=limit_cnt)
