@@ -552,9 +552,26 @@ class NewsCrawler:
             title = art["title"]
             title_lower = title.lower()
 
-            # 타 종목(야구, 축구, 농구, 골프 등) 노이즈 기사 전격 제외
-            other_sports = ["야구", "프로야구", "축구", "k리그", "농구", "골프", "배구", "메이저리그", "mlb", "kbo", "손흥민", "류현진"]
+            # 타 종목(야구, 축구, 타 e스포츠-영문약자 및 영문명 종합 정밀 제외) 노이즈 기사 전격 제외
+            other_sports = [
+                # 일반 스포츠
+                "야구", "프로야구", "축구", "k리그", "농구", "골프", "배구", "메이저리그", "mlb", "kbo", "손흥민", "류현진",
+                # FPS / 슈팅 / 배틀로얄 (영문/약자 포함)
+                "vct", "발로란트", "valorant", "배틀그라운드", "배그", "pubg", "pubgm", "pubg mobile", "pubg 모바일", "모바일 배그", "모바일배그",
+                "오버워치", "owcs", "overwatch", "ow2", "에이펙스", "apex legends", "apex", "cs:go", "csgo", "cs2", "counter-strike",
+                "레인보우식스", "r6s", "r6", "서든어택", "스페셜포스", "콜오브듀티", "cod", "codl", "포트나이트", "fortnite", "크로스파이어", "crossfire",
+                # 격투 / RTS / 기타 (영문/약자 포함)
+                "스트리트파이터", "스파5", "스파6", "sf5", "sf6", "street fighter", "sfv", "sfvi",
+                "철권", "tekken", "tekken 7", "tekken 8", "tekken7", "tekken8", "길티기어", "ggst",
+                "스타크래프트", "starcraft", "sc2", "스타2", "워크래프트", "warcraft", "war3", "wc3",
+                # MOBA / 모바일 / 스포츠게임 / 카드 (영문/약자 포함)
+                "도타", "dota", "dota 2", "dota2", "왕자영요", "honor of kings", "hok", "펜타스톰", "aov", "arena of valor",
+                "모바일 레전드", "모바일레전드", "mlbb", "fc 온라인", "fc온라인", "피파온라인", "fifa online", "fo4", "eacc", "ea fc",
+                "하스스톤", "hearthstone", "tft", "teamfight tactics", "전략적팀전투", "전략적 팀 전투", "룬테라", "lor", "legends of runeterra",
+                "카트라이더", "kartrider", "섀도우버스", "shadowverse", "로켓리그", "rocket league"
+            ]
             if any(skw in title_lower for skw in other_sports):
+                log_event("NEWS_SCRAPING", "INFO", f"LoL 외 타 종목/대회 기사 스킵: {title}")
                 continue
             
             # 인터뷰 여부 판별 (선수/감독명 등 정밀화)
